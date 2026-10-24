@@ -1,8 +1,10 @@
 """Primary API for writing/reading/appending."""
 
+import contextlib
 import itertools
 import json
 import re
+import stat
 import uuid
 import warnings
 from typing import TYPE_CHECKING, Final, cast, override
@@ -34,6 +36,58 @@ def _tmp_path(directory: Path, suffix: str) -> Path:
         A new, unique temporary path.
     """
     return directory / f".{uuid.uuid4().hex}{suffix}.tmp"
+
+
+def _make_read_only(file: Path) -> None:
+    """Remove every write permission from file so finished data is never modified.
+
+    Args:
+        file: The file to make read only.
+
+    Returns:
+        None.
+
+    Raises:
+        OSError: If the file's permissions cannot be read or changed.
+    """
+    file.chmod(
+        stat.S_IMODE(file.stat().st_mode)
+        & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+    )
+
+
+def _remove_tmp_file(file: Path) -> None:
+    """Delete a tmp file if it still exists, even if it has been made read only.
+
+    Windows cannot delete read-only files, so write permission is restored first.
+    This is only safe because tmp files are never linked anywhere else.
+
+    Args:
+        file: The tmp file to delete.
+
+    Returns:
+        None.
+
+    Raises:
+        OSError: If the file exists but cannot be deleted.
+    """
+    with contextlib.suppress(FileNotFoundError):
+        file.chmod(stat.S_IREAD | stat.S_IWRITE)
+    file.unlink(missing_ok=True)
+
+
+def _claim_marker(data_dir: Path, idx: int, extension: str) -> Path:
+    """Get the hidden marker file whose creation claims a data file index.
+
+    Args:
+        data_dir: The version directory.
+        idx: The data file index.
+        extension: The file extension of the data files.
+
+    Returns:
+        The marker path, e.g. `.3.parquet.claim`.
+    """
+    return data_dir / f".{idx}.{extension}.claim"
 
 
 def _data_file_index(file: Path) -> int:
@@ -214,6 +268,7 @@ class DAL:
             data = data.lazy()
         tmp_file = _tmp_path(output_dir, f".{self.extension}")
         self._sink(data, tmp_file)
+        _make_read_only(tmp_file)
         tmp_file.replace(output_dir / f"0.{self.extension}")
         # only point the manifest at the new version once its data is complete
         manifest.commit_data_dir(output_dir)
@@ -265,10 +320,11 @@ class DAL:
         data_dir = latest_data[0].parent
         tmp_file = _tmp_path(data_dir, f".{self.extension}")
         self._sink(data, tmp_file)
+        _make_read_only(tmp_file)
         try:
             return self._publish_append_file(tmp_file, latest_data)
         finally:
-            tmp_file.unlink(missing_ok=True)
+            _remove_tmp_file(tmp_file)
 
     def _publish_append_file(
         self, tmp_file: Path, latest_data: tuple[Path, ...]
@@ -284,7 +340,8 @@ class DAL:
 
         Raises:
             RuntimeError: If latest_data spans more than one directory.
-            OSError: If the file cannot be linked into the data directory.
+            OSError: If the index cannot be claimed or the file cannot be moved into
+                the data directory.
         """
         parent_dirs = {file.parent for file in latest_data}
         if len(parent_dirs) > 1:
@@ -292,11 +349,18 @@ class DAL:
             raise RuntimeError(msg)
         data_dir = parent_dirs.pop()
         next_idx = max(_data_file_index(file) for file in latest_data) + 1
-        return _claim_first_free(
-            (data_dir / f"{idx}.{self.extension}" for idx in itertools.count(next_idx)),
-            # hard links fail if the target exists, so concurrent appends never clobber
-            lambda path: path.hardlink_to(tmp_file),
+        # exclusive create is atomic on local disks, SMB and NFSv3+, so exactly one
+        # append owns each index. Markers are kept so an index is never re-claimed:
+        # a plain rename would silently replace a file published by another append
+        idx = _claim_first_free(
+            itertools.count(next_idx),
+            lambda idx: _claim_marker(data_dir, idx, self.extension).touch(
+                exist_ok=False
+            ),
         )
+        published = data_dir / f"{idx}.{self.extension}"
+        tmp_file.replace(published)
+        return published
 
     def _get_profile_dir(self, *keys: str) -> Path:
         """Get path to the profile directory described by keys.

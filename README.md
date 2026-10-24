@@ -12,13 +12,13 @@ Saving data frames to files is easy. Keeping those files trustworthy is harder:
 - two processes writing at once can clobber each other;
 - a reader can pick up a file that is still being written.
 
-salp handles this with a small, predictable layout on the local filesystem. There is no database or server to run.
+salp handles this with a small, predictable layout on the filesystem. There is no database or server to run.
 
 ## Project summary
 
 - **Versioned**: every `write` creates a new version (`v0`, `v1`, …). Older versions stay on disk until you remove them, so rollbacks and audits are simple.
 - **Append-only**: `append` adds a new file to the latest version and never rewrites existing files. Columns are reordered and cast to match the stored data.
-- **Safe with several processes**: versions are claimed with an atomic `mkdir`, appends use hard links that fail rather than overwrite, and the manifest naming the latest version is replaced in one step.
+- **Safe with several processes**: versions are claimed with an atomic `mkdir`, appends claim their index by exclusively creating a marker file so they never overwrite each other, and the manifest naming the latest version is replaced in one step.
 - **Lazy**: `read` returns a `polars.LazyFrame`, so filters and column selections are pushed down into the file scan.
 - **Parquet or CSV**: `DAL` stores parquet; `CsvDal` has the same API and stores CSV for people and tools that need to open the files directly.
 
@@ -35,6 +35,12 @@ data/
         └── v1/
             └── 0.parquet
 ```
+
+## Platform support
+
+salp supports Windows, Linux and macOS, with the data directory on a local disk or an NFS share (NFSv3 or later).
+
+SMB shares are supported as a lower priority. salp aims to work on them, but they get less attention and testing, and some SMB setups have limitations. For example, they may ignore the read-only permission salp sets on finished data files.
 
 ## Install
 
@@ -114,7 +120,7 @@ Writing again creates `v1`, and `read` now returns only the new data. The earlie
 >>> _ = dal.write(pl.DataFrame({"order_id": [10], "status": ["open"]}), "sales", "orders")
 >>> dal.read("sales", "orders").collect().columns
 ['order_id', 'status']
->>> sorted(path.as_posix() for path in Path("data").rglob("*.*"))
+>>> sorted(path.as_posix() for path in Path("data").rglob("[!.]*.*"))
 ['data/sales/orders/manifest.json', 'data/sales/orders/v0/0.parquet', 'data/sales/orders/v0/1.parquet', 'data/sales/orders/v1/0.parquet']
 
 ```

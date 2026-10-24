@@ -26,16 +26,21 @@ version and a manifest that names the latest one:
            ├── manifest.json        # {"latest_data_dir": "v1"}
            ├── v0/
            │   ├── 0.parquet        # written by write()
-           │   └── 1.parquet        # added by append()
+           │   ├── 1.parquet        # added by append()
+           │   └── .1.parquet.claim # marks index 1 as taken
            └── v1/
                └── 0.parquet
 
 * `~salp.dal.dal.DAL.write` creates the next ``vN`` directory, writes
   ``0.parquet`` into it, then points the manifest at it.
 * `~salp.dal.dal.DAL.append` adds ``1.parquet``, ``2.parquet``, and so on to the
-  version the manifest points at.
+  version the manifest points at, plus a hidden ``.claim`` marker for each.
 * `~salp.dal.dal.DAL.read` scans every numbered data file in that version, in
-  index order. Other files, such as hidden ``.tmp`` files, are ignored.
+  index order. Other files, such as hidden ``.tmp`` and ``.claim`` files, are
+  ignored.
+
+Data files are read only once written, so existing data cannot be changed by
+accident.
 
 This write, append, write sequence produces exactly that layout:
 
@@ -46,7 +51,7 @@ This write, append, write sequence produces exactly that layout:
    >>> _ = dal.write(pl.DataFrame({"id": [3]}), "sales", "orders")
    >>> profile_dir = data_dir / "sales" / "orders"
    >>> sorted(path.relative_to(profile_dir).as_posix() for path in profile_dir.rglob("*"))
-   ['manifest.json', 'v0', 'v0/0.parquet', 'v0/1.parquet', 'v1', 'v1/0.parquet']
+   ['manifest.json', 'v0', 'v0/.1.parquet.claim', 'v0/0.parquet', 'v0/1.parquet', 'v1', 'v1/0.parquet']
    >>> json.loads((profile_dir / "manifest.json").read_text())
    {'latest_data_dir': 'v1'}
    >>> _ = (profile_dir / "v1" / ".half-written.parquet.tmp").write_bytes(b"")
@@ -104,14 +109,18 @@ have the same column names as the existing data.
 Safety with several processes
 -----------------------------
 
-salp is designed for several processes sharing one data directory on a local
-filesystem:
+salp is designed for several processes sharing one data directory, on a local
+disk or an NFS share, from Windows, Linux or macOS. SMB shares are supported as
+a lower priority:
 
 * **Writers never share a version.** Each write claims its ``vN`` directory with
   an atomic ``mkdir``.
-* **Appends never overwrite each other.** Each append writes to a temporary file
-  and then hard-links it to the next free index, which fails rather than
-  replacing an existing file.
+* **Appends never overwrite each other.** Each append writes to a temporary
+  file, claims the next free index by exclusively creating a hidden
+  ``.<index>.<ext>.claim`` marker, and only then moves the file into place.
+  Markers are never deleted, so an index is only ever claimed once. A marker
+  without a data file, left by an append that failed, just leaves a gap in the
+  indices.
 * **Readers never see partial data.** Data files and the manifest are written to
   temporary files and moved into place in one step. The manifest only moves to a
   new version once its data is complete.
@@ -131,8 +140,8 @@ Limitations
 * **Stale locks are not cleaned up.** If a process is killed while holding the
   manifest lock, writes to that profile fail until the lock file is deleted. See
   :ref:`recipe-stale-lock`.
-* **Hard links are required** for `~salp.dal.dal.DAL.append`. Most local
-  filesystems support them; some network and FUSE filesystems do not.
+* **Exclusive file creation is required** for `~salp.dal.dal.DAL.append`. Local
+  disks, SMB and NFSv3 or later support it; NFSv2 does not.
 * **Don't mix formats in one profile.** `~salp.dal.dal.DAL` and
   `~salp.dal.dal.CsvDal` share the manifest format, so a CSV write to a profile
   hides its parquet data from `~salp.dal.dal.DAL` and the other way round. Use a
