@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 _DATA_DIR_PATTERN = re.compile(r"v(\d+)")
-_DATA_FILE_PATTERN = re.compile(r"(\d+)\.parquet")
+_DATA_FILE_PATTERN = {"parquet": re.compile(r"(\d+)\.parquet")}
 
 
 def _tmp_path(directory: Path, suffix: str) -> Path:
@@ -24,11 +24,10 @@ def _tmp_path(directory: Path, suffix: str) -> Path:
     return directory / f".{uuid.uuid4().hex}{suffix}.tmp"
 
 
-def _data_files(data_dir: Path) -> tuple[Path, ...]:
+def _data_files(data_dir: Path, extension: str) -> tuple[Path, ...]:
     """Get the data files in a version directory, sorted by their index."""
-    files = (
-        file for file in data_dir.iterdir() if _DATA_FILE_PATTERN.fullmatch(file.name)
-    )
+    pat = _DATA_FILE_PATTERN[extension]
+    files = (file for file in data_dir.iterdir() if pat.fullmatch(file.name))
     return tuple(sorted(files, key=lambda file: int(file.stem)))
 
 
@@ -38,8 +37,20 @@ class DAL:
     data_directory: Path
     """The directory where data files are stored."""
 
+    extension: str = "parquet"
+
     def __init__(self, data_directory: Path):
         self.data_directory = data_directory
+
+    @staticmethod
+    def _sink(data: pl.LazyFrame, output_file: Path) -> None:
+        """Wrapper so we can replace our file type easily."""
+        data.sink_parquet(output_file)
+
+    @staticmethod
+    def _scan(output_paths: Path | list[Path]) -> pl.LazyFrame:
+        """Wrapper so we can replace our file type easily."""
+        return pl.scan_parquet(output_paths)
 
     def read(self, *keys: str) -> pl.LazyFrame:
         """Read data from the latest version of the data described by keys."""
@@ -47,7 +58,7 @@ class DAL:
         if not latest_data:
             msg = f"Cannot find files for {keys}"
             raise FileNotFoundError(msg)
-        return pl.scan_parquet(list(latest_data))
+        return self._scan(list(latest_data))
 
     def write(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
         """Write the data and return the profile versioned directory used."""
@@ -57,9 +68,9 @@ class DAL:
         output_dir = manifest.reserve_new_data_dir()
         if isinstance(data, pl.DataFrame):
             data = data.lazy()
-        tmp_file = _tmp_path(output_dir, ".parquet")
-        data.sink_parquet(tmp_file)
-        os.replace(tmp_file, output_dir / "0.parquet")
+        tmp_file = _tmp_path(output_dir, f".{self.extension}")
+        self._sink(data, tmp_file)
+        os.replace(tmp_file, output_dir / f"0.{self.extension}")
         # only point the manifest at the new version once its data is complete
         manifest.commit_data_dir(output_dir)
         return output_dir
@@ -78,7 +89,7 @@ class DAL:
 
         if isinstance(data, pl.DataFrame):
             data = data.lazy()
-        existing_schema = pl.scan_parquet(list(latest_data)).collect_schema()
+        existing_schema = self._scan(list(latest_data)).collect_schema()
         new_names = set(data.collect_schema().names())
         if new_names != set(existing_schema.names()):
             msg = (
@@ -89,8 +100,8 @@ class DAL:
         data = data.select(existing_schema.names()).cast(existing_schema)
 
         data_dir = latest_data[0].parent
-        tmp_file = _tmp_path(data_dir, ".parquet")
-        data.sink_parquet(tmp_file)
+        tmp_file = _tmp_path(data_dir, f".{self.extension}")
+        self._sink(data, tmp_file)
         try:
             return self._publish_append_file(tmp_file, latest_data)
         finally:
@@ -107,7 +118,7 @@ class DAL:
         data_dir = parent_dirs.pop()
         next_idx = max(int(file.stem) for file in latest_data) + 1
         while True:
-            next_path = data_dir / f"{next_idx}.parquet"
+            next_path = data_dir / f"{next_idx}.{self.extension}"
             try:
                 # hard links fail if the target exists, so concurrent appends never clobber
                 os.link(tmp_file, next_path)
@@ -140,7 +151,29 @@ class DAL:
         profile_latest_version_dir = self._get_latest_profile_version(*keys)
         if profile_latest_version_dir is None:
             return None
-        return _data_files(profile_latest_version_dir)
+        return _data_files(profile_latest_version_dir, extension=self.extension)
+
+
+class CsvDal(DAL):
+    """Same as a DAL but uses csv files instead of parquet files.
+
+    Broadly recommend using the parquet version, but this exists for user convenience
+    """
+
+    extension: str = "csv"
+
+    def __init__(self, data_directory: Path):
+        self.data_directory = data_directory
+
+    @staticmethod
+    def _sink(data: pl.LazyFrame, output_file: Path) -> None:
+        """Wrapper so we can replace our file type easily."""
+        data.sink_csv(output_file)
+
+    @staticmethod
+    def _scan(output_paths: Path | list[Path]) -> pl.LazyFrame:
+        """Wrapper so we can replace our file type easily."""
+        return pl.scan_csv(output_paths)
 
 
 class DataManifestFile:
