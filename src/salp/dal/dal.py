@@ -16,7 +16,10 @@ if TYPE_CHECKING:
 
 
 _DATA_DIR_PATTERN = re.compile(r"v(\d+)")
-_DATA_FILE_PATTERN = {"parquet": re.compile(r"(\d+)\.parquet")}
+_DATA_FILE_PATTERN = {
+    "parquet": re.compile(r"(\d+)\.parquet"),
+    "csv": re.compile(r"(\d+)\.csv"),
+}
 
 
 def _tmp_path(directory: Path, suffix: str) -> Path:
