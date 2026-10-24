@@ -34,7 +34,20 @@ class FileLockedError(LockError):
 
 
 class SimpleWriteLock:
-    """Simple lock that prevents other processes accessing a file being written to."""
+    """Simple lock that prevents other processes accessing a file being written to.
+
+    The lock is a `<file>.write_lock` file next to the locked file, so it works
+    across processes but is only advisory: code that ignores the lock is not
+    blocked.
+
+    Example:
+        >>> target = data_dir / "notes.txt"
+        >>> with SimpleWriteLock(target, timeout=1.0):
+        ...     file_is_locked(target)
+        True
+        >>> file_is_locked(target)
+        False
+    """
 
     def __init__(
         self, path: Path, timeout: float = 0.0, poll_interval: float = 0.05
@@ -45,6 +58,12 @@ class SimpleWriteLock:
             path: The file to lock.
             timeout: Seconds to keep retrying if another process holds the lock.
             poll_interval: Seconds to wait between attempts to take the lock.
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: If path has an empty name, such as `/`.
         """
         self.path = path
         self.lock_path = path.with_suffix(path.suffix + _WRITE_LOCK_SUFFIX)
@@ -63,6 +82,7 @@ class SimpleWriteLock:
             LockError: If this lock is already held.
             FileAlreadyLockedError: If another process still holds the lock after the
                 timeout.
+            FileLockPermissionError: If the lock file cannot be created.
         """
         if self.locked:
             msg = f"File {self.path} is already locked."
@@ -81,7 +101,20 @@ class SimpleWriteLock:
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
-        """Release the lock."""
+        """Release the lock.
+
+        Args:
+            exc_type: Type of the exception raised in the context, if any. Unused.
+            exc_value: The exception raised in the context, if any. Unused.
+            traceback: Traceback of the exception raised in the context, if any.
+                Unused.
+
+        Returns:
+            None, so exceptions raised in the context are never suppressed.
+
+        Raises:
+            OSError: If the lock file cannot be removed.
+        """
         del exc_type, exc_value, traceback
         if self.locked:
             self.lock_path.unlink()
@@ -114,6 +147,9 @@ def file_is_locked(path: Path) -> bool:
 
     Returns:
         Whether a lock is currently held on path.
+
+    Raises:
+        ValueError: If path has an empty name, such as `/`.
     """
     lock_path = path.with_suffix(path.suffix + _WRITE_LOCK_SUFFIX)
     return lock_path.exists()

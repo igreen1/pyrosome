@@ -44,6 +44,9 @@ def _data_file_index(file: Path) -> int:
 
     Returns:
         The index in the file name.
+
+    Raises:
+        ValueError: If the file name is not an integer index.
     """
     return int(file.stem)
 
@@ -57,6 +60,10 @@ def _data_files(data_dir: Path, extension: str) -> tuple[Path, ...]:
 
     Returns:
         The data files, sorted by index.
+
+    Raises:
+        KeyError: If there is no data file pattern for extension.
+        OSError: If data_dir cannot be listed.
     """
     pat = _DATA_FILE_PATTERN[extension]
     files = (file for file in data_dir.iterdir() if pat.fullmatch(file.name))
@@ -75,6 +82,7 @@ def _claim_first_free[T](candidates: Iterable[T], claim: Callable[[T], None]) ->
 
     Raises:
         RuntimeError: If every candidate is already taken.
+        Exception: Any error from claim other than FileExistsError.
     """
     for candidate in candidates:
         try:
@@ -87,32 +95,67 @@ def _claim_first_free[T](candidates: Iterable[T], claim: Callable[[T], None]) ->
 
 
 class DAL:
-    """Data Access Layer."""
+    """Data Access Layer storing versioned data as parquet files.
+
+    Each profile, named by one or more keys, is a directory under
+    `data_directory`. Every `write` creates a new version and `append` adds files
+    to the latest version, so existing data is never modified in place.
+
+    Example:
+        >>> dal = DAL(data_dir)
+        >>> dal.write(pl.DataFrame({"x": [1, 2]}), "example").name
+        'v0'
+        >>> dal.append(pl.DataFrame({"x": [3]}), "example").name
+        '1.parquet'
+        >>> dal.read("example").collect()["x"].to_list()
+        [1, 2, 3]
+    """
 
     data_directory: Path
     """The directory where data files are stored."""
 
     extension: str = "parquet"
+    """File extension of the data files, without the leading dot."""
 
     def __init__(self, data_directory: Path) -> None:
-        """Create a data access layer.
+        """Create a data access layer. Nothing is read or written until used.
 
         Args:
             data_directory: The directory where data files are stored.
+
+        Returns:
+            None.
         """
         self.data_directory = data_directory
 
     @staticmethod
     def _sink(data: pl.LazyFrame, output_file: Path) -> None:
-        """Wrapper so we can replace our file type easily."""
+        """Wrapper so we can replace our file type easily.
+
+        Args:
+            data: The data to write.
+            output_file: The file to write to.
+
+        Returns:
+            None.
+
+        Raises:
+            polars.exceptions.PolarsError: If the data cannot be computed or written.
+        """
         data.sink_parquet(output_file)
 
     @staticmethod
     def _scan(output_paths: Path | list[Path]) -> pl.LazyFrame:
         """Wrapper so we can replace our file type easily.
 
+        Args:
+            output_paths: The data files to scan.
+
         Returns:
             A lazy scan over output_paths.
+
+        Raises:
+            polars.exceptions.PolarsError: If the files cannot be scanned.
         """
         return pl.scan_parquet(output_paths)
 
@@ -127,6 +170,9 @@ class DAL:
 
         Raises:
             FileNotFoundError: If there is no data for keys.
+            ValueError: If there are no keys or they lead outside the data directory.
+            TypeError: If the profile's manifest file is corrupt.
+            polars.exceptions.PolarsError: If the data files cannot be scanned.
         """
         if not (latest_data := self._get_latest_profile_data_paths(*keys)):
             msg = f"Cannot find files for {keys}"
@@ -136,12 +182,26 @@ class DAL:
     def write(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
         """Write the data as a new version.
 
+        Readers keep seeing the previous version until the write is complete.
+
         Args:
             data: The data to write.
             *keys: Path components naming the profile.
 
         Returns:
             The versioned directory the data was written to.
+
+        Raises:
+            ValueError: If there are no keys, they lead outside the data directory, or
+                the profile's manifest names an invalid version.
+            TypeError: If the profile's manifest file is corrupt.
+            salp.dal.simple_file_lock.FileAlreadyLockedError: If another process holds
+                the manifest lock for longer than
+                `DataManifestFile.LOCK_TIMEOUT`.
+            salp.dal.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                be locked.
+            polars.exceptions.PolarsError: If the data cannot be computed or written.
+            OSError: If the profile directory cannot be created or written to.
         """
         profile_dir = self._get_profile_dir(*keys)
         profile_dir.mkdir(parents=True, exist_ok=True)
@@ -159,7 +219,8 @@ class DAL:
     def append(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
         """Add a new file to the latest data directory without touching existing files.
 
-        If there is no existing data this writes instead.
+        Columns are reordered and cast to match the existing data. If there is no
+        existing data this warns and writes instead.
 
         Args:
             data: The data to append. Its columns must match the existing data.
@@ -170,7 +231,15 @@ class DAL:
             existing data.
 
         Raises:
-            ValueError: If the columns do not match the existing data.
+            ValueError: If the columns do not match the existing data, or for any
+                reason `write` raises it.
+            polars.exceptions.InvalidOperationError: If a column cannot be cast to
+                the existing type.
+            FileNotFoundError: If the latest version directory is missing.
+            TypeError: If the profile's manifest file is corrupt.
+            RuntimeError: If the latest data spans more than one directory.
+            polars.exceptions.PolarsError: If the data cannot be computed or written.
+            OSError: If the data directory cannot be written to.
         """
         if not (latest_data := self._get_latest_profile_data_paths(*keys)):
             msg = f"Appending to empty data for {keys}. Writing instead"
@@ -212,6 +281,7 @@ class DAL:
 
         Raises:
             RuntimeError: If latest_data spans more than one directory.
+            OSError: If the file cannot be linked into the data directory.
         """
         parent_dirs = {file.parent for file in latest_data}
         if len(parent_dirs) > 1:
@@ -258,6 +328,11 @@ class DAL:
 
         Returns:
             The latest version directory, or None if nothing exists yet.
+
+        Raises:
+            ValueError: If there are no keys or they lead outside the data directory.
+            FileNotFoundError: If the manifest names a missing version directory.
+            TypeError: If the profile's manifest file is corrupt.
         """
         profile_dir = self._get_profile_dir(*keys)
         manifest_file = DataManifestFile(profile_dir)
@@ -273,6 +348,11 @@ class DAL:
 
         Returns:
             The latest data files, empty if nothing exists yet.
+
+        Raises:
+            ValueError: If there are no keys or they lead outside the data directory.
+            FileNotFoundError: If the manifest names a missing version directory.
+            TypeError: If the profile's manifest file is corrupt.
         """
         if (latest_dir := self._get_latest_profile_version(*keys)) is None:
             return ()
@@ -282,15 +362,34 @@ class DAL:
 class CsvDal(DAL):
     """Same as a DAL but uses csv files instead of parquet files.
 
-    Broadly recommend using the parquet version, but this exists for user convenience
+    Broadly recommend using the parquet version, but this exists for user convenience.
+    Column types are inferred when the files are read back.
+
+    Example:
+        >>> csv_dal = CsvDal(data_dir)
+        >>> output_dir = csv_dal.write(pl.DataFrame({"x": [1, 2]}), "example_csv")
+        >>> (output_dir / "0.csv").read_text().splitlines()
+        ['x', '1', '2']
     """
 
     extension: str = "csv"
+    """File extension of the data files, without the leading dot."""
 
     @override
     @staticmethod
     def _sink(data: pl.LazyFrame, output_file: Path) -> None:
-        """Wrapper so we can replace our file type easily."""
+        """Wrapper so we can replace our file type easily.
+
+        Args:
+            data: The data to write.
+            output_file: The file to write to.
+
+        Returns:
+            None.
+
+        Raises:
+            polars.exceptions.PolarsError: If the data cannot be computed or written.
+        """
         data.sink_csv(output_file)
 
     @override
@@ -298,19 +397,27 @@ class CsvDal(DAL):
     def _scan(output_paths: Path | list[Path]) -> pl.LazyFrame:
         """Wrapper so we can replace our file type easily.
 
+        Args:
+            output_paths: The data files to scan.
+
         Returns:
             A lazy scan over output_paths.
+
+        Raises:
+            polars.exceptions.PolarsError: If the files cannot be scanned.
         """
         return pl.scan_csv(output_paths)
 
 
 class DataManifestFile:
-    """A manifest file that describes the data in a directory."""
+    """A manifest file that records the latest version of a profile."""
 
     profile_path: Path
     """Path to the profile directory."""
 
     MANIFEST_FILE_NAME: Final[str] = "manifest.json"
+    """Name of the manifest file inside the profile directory."""
+
     LOCK_TIMEOUT: Final[float] = 10.0
     """Seconds to wait for another process to finish writing the manifest."""
 
@@ -319,6 +426,9 @@ class DataManifestFile:
 
         Args:
             profile_path: Path to the profile directory.
+
+        Returns:
+            None.
         """
         self.profile_path = profile_path
         self.manifest_path = profile_path / self.MANIFEST_FILE_NAME
@@ -338,7 +448,9 @@ class DataManifestFile:
             The latest data directory.
 
         Raises:
-            FileNotFoundError: If the latest data directory does not exist.
+            FileNotFoundError: If the manifest file or the latest data directory does
+                not exist.
+            TypeError: If the manifest file is corrupt.
         """
         latest_data_dir = self.profile_path / self._read_latest_data_dir_name()
         if not latest_data_dir.exists():
@@ -353,6 +465,9 @@ class DataManifestFile:
 
         Returns:
             The new, empty data directory.
+
+        Raises:
+            OSError: If the profile directory cannot be listed or written to.
         """
         existing = [
             int(match.group(1))
@@ -371,6 +486,19 @@ class DataManifestFile:
 
         Args:
             data_dir: The finished data directory.
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: If data_dir or the version in the manifest has an invalid
+                name.
+            TypeError: If the manifest file is corrupt.
+            salp.dal.simple_file_lock.FileAlreadyLockedError: If another process holds
+                the manifest lock for longer than `LOCK_TIMEOUT`.
+            salp.dal.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                be locked.
+            OSError: If the manifest file cannot be written.
         """
         new_idx = self._data_dir_index(data_dir.name)
         with self._lock():
@@ -406,6 +534,7 @@ class DataManifestFile:
         Raises:
             FileNotFoundError: If the manifest file does not exist.
             TypeError: If the manifest file has no valid latest data directory.
+            json.JSONDecodeError: If the manifest file is not valid JSON.
         """
         if not self.manifest_path.exists():
             msg = f"Manifest file {self.manifest_path} does not exist."
@@ -426,6 +555,12 @@ class DataManifestFile:
 
         Args:
             latest_data_dir: Name of the latest data directory.
+
+        Returns:
+            None.
+
+        Raises:
+            OSError: If the manifest file cannot be written.
         """
         manifest: dict[str, str] = {"latest_data_dir": latest_data_dir}
         tmp_path = _tmp_path(self.profile_path, ".json")

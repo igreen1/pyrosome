@@ -23,6 +23,10 @@ dev = [
     "ruff>=0.17.2",
     "ty>=0.0.91",
 ]
+docs = [
+    "furo>=2025.12.19",
+    "sphinx>=9.2.0",
+]
 
 [tool.ruff]
 target-version = "py315"
@@ -35,11 +39,17 @@ ignore = [
     "missing-trailing-comma",
     # no copyright headers in this project
     "missing-copyright-notice",
+    # every docstring documents its returns and raises, including None and
+    # exceptions raised by functions it calls
+    "docstring-extraneous-returns",
+    "docstring-extraneous-exception",
 ]
 
 [tool.ruff.lint.per-file-ignores]
 # pytest relies on bare asserts
 "tests/**" = ["assert"]
+# Sphinx requires conf.py to sit in docs/ without an __init__.py
+"docs/conf.py" = ["implicit-namespace-package"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -115,6 +125,8 @@ load-plugins = [
 
 [tool.pylint."messages control"]
 enable = ["all"]
+# every docstring documents its returns, including None
+disable = ["redundant-returns-doc"]
 
 [tool.pylint.parameter_documentation]
 accept-no-param-doc = false
