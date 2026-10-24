@@ -162,9 +162,6 @@ class CsvDal(DAL):
 
     extension: str = "csv"
 
-    def __init__(self, data_directory: Path):
-        self.data_directory = data_directory
-
     @staticmethod
     def _sink(data: pl.LazyFrame, output_file: Path) -> None:
         """Wrapper so we can replace our file type easily."""
