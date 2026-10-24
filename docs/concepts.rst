@@ -1,6 +1,17 @@
 Concepts
 ========
 
+The examples on this page build on each other and start from:
+
+.. doctest::
+
+   >>> import json
+   >>> from pathlib import Path
+   >>> import polars as pl
+   >>> from salp.dal.dal import DAL, CsvDal
+   >>> data_dir = Path("data")
+   >>> dal = DAL(data_dir)
+
 On-disk layout
 --------------
 
@@ -26,6 +37,22 @@ version and a manifest that names the latest one:
 * `~salp.dal.dal.DAL.read` scans every numbered data file in that version, in
   index order. Other files, such as hidden ``.tmp`` files, are ignored.
 
+This write, append, write sequence produces exactly that layout:
+
+.. doctest::
+
+   >>> _ = dal.write(pl.DataFrame({"id": [1]}), "sales", "orders")
+   >>> _ = dal.append(pl.DataFrame({"id": [2]}), "sales", "orders")
+   >>> _ = dal.write(pl.DataFrame({"id": [3]}), "sales", "orders")
+   >>> profile_dir = data_dir / "sales" / "orders"
+   >>> sorted(path.relative_to(profile_dir).as_posix() for path in profile_dir.rglob("*"))
+   ['manifest.json', 'v0', 'v0/0.parquet', 'v0/1.parquet', 'v1', 'v1/0.parquet']
+   >>> json.loads((profile_dir / "manifest.json").read_text())
+   {'latest_data_dir': 'v1'}
+   >>> _ = (profile_dir / "v1" / ".half-written.parquet.tmp").write_bytes(b"")
+   >>> dal.read("sales", "orders").collect()["id"].to_list()
+   [3]
+
 Keys
 ----
 
@@ -34,8 +61,28 @@ Keys are path components, so ``dal.write(df, "sales", "orders")`` and
 required, and keys that resolve outside the data directory, such as ``".."``,
 raise `ValueError`.
 
+.. doctest::
+
+   >>> dal.read("sales/orders").collect()["id"].to_list()
+   [3]
+   >>> dal.read()
+   Traceback (most recent call last):
+   ...
+   ValueError: At least one key is required
+   >>> dal.read("..")
+   Traceback (most recent call last):
+   ...
+   ValueError: Profile directory data/.. is not within data directory data
+
 A profile is only the directory that holds a manifest. ``dal.read("sales")`` does
 not combine the profiles below ``sales/``; see :ref:`recipe-combine-profiles`.
+
+.. doctest::
+
+   >>> dal.read("sales")
+   Traceback (most recent call last):
+   ...
+   FileNotFoundError: Cannot find files for ('sales',)
 
 Versions
 --------
@@ -46,6 +93,13 @@ are removed. See :ref:`recipe-prune`.
 
 Each version can have its own schema. Within a version, every appended file must
 have the same column names as the existing data.
+
+.. doctest::
+
+   >>> dal.append(pl.DataFrame({"name": ["x"]}), "sales", "orders")
+   Traceback (most recent call last):
+   ...
+   ValueError: Columns ['name'] do not match existing columns ['id'] for ('sales', 'orders')
 
 Safety with several processes
 -----------------------------
@@ -68,6 +122,9 @@ Manifest updates take a short lock, the ``manifest.json.write_lock`` file. A
 writer waits up to `~salp.dal.dal.DataManifestFile.LOCK_TIMEOUT` seconds for it
 before raising `~salp.dal.simple_file_lock.FileAlreadyLockedError`.
 
+These guarantees are covered by the multi-process tests in ``tests/``, and
+:ref:`recipe-parallel` shows them in use.
+
 Limitations
 -----------
 
@@ -80,7 +137,28 @@ Limitations
   `~salp.dal.dal.CsvDal` share the manifest format, so a CSV write to a profile
   hides its parquet data from `~salp.dal.dal.DAL` and the other way round. Use a
   separate data directory, or separate keys, for each format.
+
+  .. doctest::
+
+     >>> _ = CsvDal(data_dir).write(pl.DataFrame({"id": [4]}), "sales", "orders")
+     >>> dal.read("sales", "orders")
+     Traceback (most recent call last):
+     ...
+     FileNotFoundError: Cannot find files for ('sales', 'orders')
+
 * **CSV types are inferred.** `~salp.dal.dal.CsvDal` stores no schema, so types
-  such as dates or small integers may come back as strings or ``Int64``.
+  such as dates or small integers come back as strings or ``Int64``.
+
+  .. doctest::
+
+     >>> import datetime
+     >>> typed = pl.DataFrame(
+     ...     {"day": [datetime.date(2026, 10, 24)], "n": pl.Series([1], dtype=pl.Int8)}
+     ... )
+     >>> csv_dal = CsvDal(Path("exports"))
+     >>> _ = csv_dal.write(typed, "typed")
+     >>> csv_dal.read("typed").collect_schema()
+     Schema({'day': String, 'n': Int64})
+
 * **Appends into an old version are not possible.** `~salp.dal.dal.DAL.append`
   always targets the latest version.

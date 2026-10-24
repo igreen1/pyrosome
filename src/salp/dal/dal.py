@@ -102,7 +102,10 @@ class DAL:
     to the latest version, so existing data is never modified in place.
 
     Example:
-        >>> dal = DAL(data_dir)
+        >>> from pathlib import Path
+        >>> import polars as pl
+        >>> from salp.dal.dal import DAL
+        >>> dal = DAL(Path("data"))
         >>> dal.write(pl.DataFrame({"x": [1, 2]}), "example").name
         'v0'
         >>> dal.append(pl.DataFrame({"x": [3]}), "example").name
@@ -366,7 +369,10 @@ class CsvDal(DAL):
     Column types are inferred when the files are read back.
 
     Example:
-        >>> csv_dal = CsvDal(data_dir)
+        >>> from pathlib import Path
+        >>> import polars as pl
+        >>> from salp.dal.dal import CsvDal
+        >>> csv_dal = CsvDal(Path("data"))
         >>> output_dir = csv_dal.write(pl.DataFrame({"x": [1, 2]}), "example_csv")
         >>> (output_dir / "0.csv").read_text().splitlines()
         ['x', '1', '2']

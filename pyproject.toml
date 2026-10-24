@@ -50,6 +50,8 @@ ignore = [
 "tests/**" = ["assert"]
 # Sphinx requires conf.py to sit in docs/ without an __init__.py
 "docs/conf.py" = ["implicit-namespace-package"]
+# standalone scripts included in the docs, which print their results
+"docs/examples/**" = ["implicit-namespace-package", "print"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "google"
@@ -137,3 +139,11 @@ default-docstring-type = "google"
 
 [tool.pylint.typing]
 runtime-typing = false
+
+[tool.pytest]
+testpaths = ["tests", "src", "docs", "README.md"]
+# run the examples in docstrings, docs pages and the README as doctests
+addopts = ["--doctest-modules", "--doctest-glob=*.rst", "--doctest-glob=*.md"]
+doctest_optionflags = ["ELLIPSIS"]
+# defined in conftest.py
+usefixtures = ["run_in_tmp_path"]

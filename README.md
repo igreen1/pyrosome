@@ -62,58 +62,81 @@ This installs the development tools (pytest, ruff, ty, mypy, pylint) and the doc
 
 | Task | Command |
 | --- | --- |
-| Run tests | `uv run pytest` |
+| Run tests, including every example in the docs and this README | `uv run pytest` |
 | Lint and format | `uv run ruff check` and `uv run ruff format` |
 | Type check | `uv run ty check` and `uv run mypy src` |
 | Pylint | `uv run pylint src` |
 | Build docs | `uv run sphinx-build -W -b html docs docs/_build/html` |
-| Test docs examples | `uv run sphinx-build -W -b doctest docs docs/_build/doctest` |
 
 ## Quickstart
 
-```python
-from pathlib import Path
+`write` creates a new version and returns its directory:
 
-import polars as pl
+```pycon
+>>> from pathlib import Path
+>>> import polars as pl
+>>> from salp.dal.dal import DAL
+>>> dal = DAL(Path("data"))
+>>> orders = pl.DataFrame(
+...     {"order_id": [1, 2, 3], "region": ["eu", "eu", "us"], "total": [9.5, 20.0, 7.25]}
+... )
+>>> dal.write(orders, "sales", "orders").as_posix()
+'data/sales/orders/v0'
 
-from salp.dal.dal import DAL
-
-dal = DAL(Path("data"))
-
-# write creates a new version and returns its directory
-orders = pl.DataFrame(
-    {"order_id": [1, 2, 3], "region": ["eu", "eu", "us"], "total": [9.5, 20.0, 7.25]}
-)
-dal.write(orders, "sales", "orders")  # data/sales/orders/v0
-
-# append adds a file to the latest version; column order doesn't matter
-more = pl.DataFrame({"total": [12.0], "order_id": [4], "region": ["us"]})
-dal.append(more, "sales", "orders")  # data/sales/orders/v0/1.parquet
-
-# read returns a LazyFrame over the latest version
-eu_total = (
-    dal.read("sales", "orders")
-    .filter(pl.col("region") == "eu")
-    .select(pl.col("total").sum())
-    .collect()
-    .item()
-)
-print(eu_total)  # 29.5
-
-# writing again creates v1; read now returns only the new data
-dal.write(pl.DataFrame({"order_id": [10], "status": ["open"]}), "sales", "orders")
-print(dal.read("sales", "orders").collect().columns)  # ['order_id', 'status']
 ```
 
-To store CSV instead, use `CsvDal` with the same methods. Keep each format in its own data directory, because a CSV write to a parquet profile hides the parquet data from `DAL`.
+`append` adds a file to the latest version. Column order doesn't matter:
 
-```python
-from salp.dal.dal import CsvDal
+```pycon
+>>> more = pl.DataFrame({"total": [12.0], "order_id": [4], "region": ["us"]})
+>>> dal.append(more, "sales", "orders").as_posix()
+'data/sales/orders/v0/1.parquet'
 
-CsvDal(Path("exports")).write(orders, "sales", "orders")  # exports/sales/orders/v0/0.csv
 ```
 
-`read` raises `FileNotFoundError` for a profile with no data, and `append` raises `ValueError` if the columns don't match the stored data.
+`read` returns a `LazyFrame` over the latest version:
+
+```pycon
+>>> (
+...     dal.read("sales", "orders")
+...     .filter(pl.col("region") == "eu")
+...     .select(pl.col("total").sum())
+...     .collect()
+...     .item()
+... )
+29.5
+
+```
+
+Writing again creates `v1`, and `read` now returns only the new data. The earlier version stays on disk:
+
+```pycon
+>>> _ = dal.write(pl.DataFrame({"order_id": [10], "status": ["open"]}), "sales", "orders")
+>>> dal.read("sales", "orders").collect().columns
+['order_id', 'status']
+>>> sorted(path.as_posix() for path in Path("data").rglob("*.*"))
+['data/sales/orders/manifest.json', 'data/sales/orders/v0/0.parquet', 'data/sales/orders/v0/1.parquet', 'data/sales/orders/v1/0.parquet']
+
+```
+
+To store CSV instead, use `CsvDal` with the same methods. Keep each format in its own data directory, because a CSV write to a parquet profile hides the parquet data from `DAL`:
+
+```pycon
+>>> from salp.dal.dal import CsvDal
+>>> CsvDal(Path("exports")).write(orders, "sales", "orders").as_posix()
+'exports/sales/orders/v0'
+
+```
+
+`read` raises `FileNotFoundError` for a profile with no data, and `append` raises `ValueError` if the columns don't match the stored data:
+
+```pycon
+>>> dal.read("sales", "returns")
+Traceback (most recent call last):
+...
+FileNotFoundError: Cannot find files for ('sales', 'returns')
+
+```
 
 ## Documentation
 
