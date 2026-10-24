@@ -4,11 +4,12 @@ Quickstart
 Install
 -------
 
-salp needs Python 3.15 or newer and polars.
+salp needs Python 3.15 or newer and polars. It is not published to PyPI, so
+install it from a local checkout:
 
 .. code-block:: console
 
-   $ uv add salp
+   $ uv add /path/to/salp
 
 Create a data access layer
 --------------------------
