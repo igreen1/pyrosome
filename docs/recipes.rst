@@ -1,12 +1,14 @@
 Recipes
 =======
 
-Short solutions to common tasks. Every example assumes:
+Short solutions to common tasks. The recipes build on each other and start from:
 
 .. doctest::
 
+   >>> from pathlib import Path
    >>> import polars as pl
    >>> from salp.dal.dal import DAL
+   >>> data_dir = Path("data")
    >>> dal = DAL(data_dir)
 
 Keep a snapshot of a full refresh
@@ -175,34 +177,25 @@ can still be using them, since a lazy frame from an earlier
 Versions newer than the manifest's latest are kept, because another process may
 still be writing them.
 
+.. _recipe-parallel:
+
 Write from several processes
 ----------------------------
 
 Writes and appends are safe from several processes at once, so a process pool
 can append batches to the same profile directly.
 
-.. code-block:: python
+Worker functions must be importable by the pool, so this recipe is a script
+rather than an interactive session:
 
-   from concurrent.futures import ProcessPoolExecutor
-   from pathlib import Path
+.. literalinclude:: examples/parallel_ingest.py
+   :caption: docs/examples/parallel_ingest.py
 
-   import polars as pl
+Running it prints:
 
-   from salp.dal.dal import DAL
+.. code-block:: text
 
-   DATA_DIR = Path("data")
-
-
-   def ingest(batch_number: int) -> Path:
-       batch = pl.DataFrame({"batch": [batch_number], "value": [batch_number * 10]})
-       return DAL(DATA_DIR).append(batch, "metrics")
-
-
-   if __name__ == "__main__":
-       DAL(DATA_DIR).write(pl.DataFrame({"batch": [0], "value": [0]}), "metrics")
-       with ProcessPoolExecutor() as pool:
-           files = list(pool.map(ingest, range(1, 100)))
-       assert len(set(files)) == len(files)  # every batch got its own file
+   99 batches appended as 99 files, 100 rows
 
 Exchange data as CSV
 --------------------

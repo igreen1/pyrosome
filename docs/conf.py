@@ -34,18 +34,9 @@ intersphinx_mapping = {
     "polars": ("https://docs.pola.rs/api/python/stable/", None),
 }
 
-# every document's examples run against a fresh, empty data directory
-doctest_global_setup = """
-import tempfile
-from pathlib import Path
-
-import polars as pl
-
-from salp.dal.dal import DAL, CsvDal, DataManifestFile
-from salp.dal.simple_file_lock import SimpleWriteLock, file_is_locked
-
-data_dir = Path(tempfile.mkdtemp())
-"""
+# examples are run by pytest (see conftest.py); `sphinx-build -b doctest` also
+# works, and runs each document in a fresh directory so it never writes here
+doctest_global_setup = "import os, tempfile; os.chdir(tempfile.mkdtemp())"
 
 html_theme = "furo"
 html_title = f"salp {release}"

@@ -1,7 +1,9 @@
 """Tests for the data access layer."""
 
 import json
+import stat
 from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -9,6 +11,8 @@ from polars.testing import assert_frame_equal
 
 from salp.dal.dal import DAL, DataManifestFile
 from salp.dal.simple_file_lock import FileAlreadyLockedError, SimpleWriteLock
+
+WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 
 KEYS = ("profile", "sub")
 
@@ -30,7 +34,10 @@ def manifest_contents(dal: DAL, *keys: str) -> dict:
 
 
 def visible_files(directory) -> list[str]:
-    return sorted(path.name for path in directory.iterdir())
+    """Files in directory, apart from the claim markers left by appends."""
+    return sorted(
+        path.name for path in directory.iterdir() if path.suffix != ".claim"
+    )
 
 
 class TestWrite:
@@ -40,6 +47,10 @@ class TestWrite:
         assert visible_files(output_dir) == ["0.parquet"]
         assert manifest_contents(dal, *KEYS) == {"latest_data_dir": "v0"}
         assert_frame_equal(dal.read(*KEYS).collect(), df)
+
+    def test_written_file_is_read_only(self, dal, df):
+        output_dir = dal.write(df, *KEYS)
+        assert not (output_dir / "0.parquet").stat().st_mode & WRITE_BITS
 
     def test_write_lazyframe(self, dal, df):
         dal.write(df.lazy(), *KEYS)
@@ -112,6 +123,11 @@ class TestRead:
 
 
 class TestAppend:
+    def test_appended_file_is_read_only(self, dal, df):
+        dal.write(df, *KEYS)
+        appended = dal.append(df, *KEYS)
+        assert not appended.stat().st_mode & WRITE_BITS
+
     def test_append_adds_file(self, dal, df):
         output_dir = dal.write(df, *KEYS)
         output_file = dal.append(df, *KEYS)
@@ -158,7 +174,41 @@ class TestAppend:
     def test_append_cleans_up_tmp_file(self, dal, df):
         output_dir = dal.write(df, *KEYS)
         dal.append(df, *KEYS)
-        assert not [p for p in output_dir.iterdir() if p.name.startswith(".")]
+        assert not list(output_dir.glob("*.tmp"))
+
+    def test_append_leaves_claim_marker(self, dal, df):
+        output_dir = dal.write(df, *KEYS)
+        dal.append(df, *KEYS)
+        assert (output_dir / ".1.parquet.claim").exists()
+
+    def test_append_skips_claimed_indices(self, dal, df):
+        # a claim whose append never finished, e.g. the process crashed
+        output_dir = dal.write(df, *KEYS)
+        (output_dir / ".1.parquet.claim").touch()
+        assert dal.append(df, *KEYS) == output_dir / "2.parquet"
+        assert visible_files(output_dir) == ["0.parquet", "2.parquet"]
+        assert_frame_equal(dal.read(*KEYS).collect(), pl.concat([df, df]))
+
+    def test_append_removes_read_only_tmp_file_on_failure(
+        self, dal, df, monkeypatch
+    ):
+        output_dir = dal.write(df, *KEYS)
+        real_unlink = Path.unlink
+
+        def windows_unlink(path, missing_ok=False):
+            # Windows cannot delete read-only files
+            if path.exists() and not path.stat().st_mode & stat.S_IWUSR:
+                raise PermissionError(path)
+            real_unlink(path, missing_ok=missing_ok)
+
+        def failing_replace(path, target):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(Path, "unlink", windows_unlink)
+        monkeypatch.setattr(Path, "replace", failing_replace)
+        with pytest.raises(OSError, match="replace failed"):
+            dal.append(df, *KEYS)
+        assert not list(output_dir.glob("*.tmp"))
 
     def test_append_goes_to_latest_version(self, dal, df):
         dal.write(df, *KEYS)

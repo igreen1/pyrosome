@@ -15,14 +15,14 @@ Create a data access layer
 --------------------------
 
 A `~salp.dal.dal.DAL` is a handle on a directory. Creating one does not touch the
-disk.
+disk; directories are created on the first write.
 
 .. doctest::
 
    >>> from pathlib import Path
    >>> import polars as pl
    >>> from salp.dal.dal import DAL
-   >>> dal = DAL(data_dir)
+   >>> dal = DAL(Path("data"))
 
 Write data
 ----------
@@ -89,9 +89,9 @@ or other tools need to open the files directly; prefer parquet otherwise.
 .. doctest::
 
    >>> from salp.dal.dal import CsvDal
-   >>> csv_dal = CsvDal(data_dir / "csv")
-   >>> csv_dal.write(orders, "sales", "orders").name
-   'v0'
+   >>> csv_dal = CsvDal(Path("exports"))
+   >>> csv_dal.write(orders, "sales", "orders").as_posix()
+   'exports/sales/orders/v0'
    >>> csv_dal.read("sales", "orders").collect().height
    3
 

@@ -22,7 +22,10 @@ def df():
 
 
 def visible_files(directory) -> list[str]:
-    return sorted(path.name for path in directory.iterdir())
+    """Files in directory, apart from the claim markers left by appends."""
+    return sorted(
+        path.name for path in directory.iterdir() if path.suffix != ".claim"
+    )
 
 
 class TestWrite:
@@ -115,7 +118,7 @@ class TestAppend:
     def test_append_cleans_up_tmp_file(self, dal, df):
         output_dir = dal.write(df, *KEYS)
         dal.append(df, *KEYS)
-        assert not [p for p in output_dir.iterdir() if p.name.startswith(".")]
+        assert not list(output_dir.glob("*.tmp"))
 
 
 def _append(data_directory, keys):
