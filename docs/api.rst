@@ -24,6 +24,11 @@ Filtering reads
 
 .. autodata:: salp.api.FilterValue
 
+Datasets
+--------
+
+.. autoclass:: salp.Dataset
+
 Internals
 ---------
 

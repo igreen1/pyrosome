@@ -96,6 +96,46 @@ columns, and an unnamed index is dropped. Converting pandas data needs the
    >>> io.read("views", page="home").collect().rows()
    [('home', 90)]
 
+Group profiles into a dataset
+-----------------------------
+
+A `~salp.Dataset` reads the profiles below the same keys with the same filters,
+so every profile in it must have the filtered columns.
+`~salp.Dataset.get_subset` narrows it further.
+
+.. doctest::
+
+   >>> from salp import Dataset
+   >>> orders = pl.DataFrame({"region": ["eu", "us", "eu"], "amount": [1, 2, 3]})
+   >>> _ = io.write(orders, "shop", "orders")
+   >>> eu = Dataset(io, "shop", region="eu")
+   >>> eu.get_profile("orders").collect()["amount"].to_list()
+   [1, 3]
+   >>> eu.get_subset(amount=3).get_profile("orders").collect()["amount"].to_list()
+   [3]
+
+To derive a profile from others, subclass `~salp.Dataset` and add a
+``_calc_<profile>`` method returning its data. The first
+`~salp.Dataset.get_cache_profile` stores it, calculated from every row rather
+than just the dataset's subset, and later calls read the stored copy. It isn't
+updated when the profiles it's calculated from change: pass ``refresh=True`` to
+recalculate it.
+
+.. doctest::
+
+   >>> class Shop(Dataset):
+   ...     def _calc_totals(self):
+   ...         orders = self.get_profile("orders")
+   ...         return orders.group_by("region").agg(pl.col("amount").sum())
+   >>> eu = Shop(io, "shop", region="eu")
+   >>> eu.get_cache_profile("totals").collect().rows()
+   [('eu', 4)]
+   >>> _ = io.append(pl.DataFrame({"region": ["eu"], "amount": [10]}), "shop", "orders")
+   >>> eu.get_cache_profile("totals").collect().rows()
+   [('eu', 4)]
+   >>> eu.get_cache_profile("totals", refresh=True).collect().rows()
+   [('eu', 14)]
+
 Read data that may not exist yet
 --------------------------------
 
