@@ -15,7 +15,7 @@ concurrency:
 
 env:
   # Paths held to the strict lint/type-check config; tests/ doesn't pass yet.
-  CHECK_PATHS: src docs
+  CHECK_PATHS: src docs conftest.py
 
 jobs:
   check:
@@ -37,7 +37,7 @@ jobs:
             run: uv run pylint $CHECK_PATHS
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           version: "0.13.5"
           enable-cache: true
@@ -48,7 +48,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           version: "0.13.5"
           enable-cache: true
@@ -79,7 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10
+      - uses: astral-sh/setup-uv@v10.3.2
         with:
           version: "0.13.5"
           enable-cache: true
