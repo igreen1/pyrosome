@@ -14,15 +14,15 @@ install it from a local checkout:
 Create a data access layer
 --------------------------
 
-A `~salp.dal.dal.Dal` is a handle on a directory. Creating one does not touch the
+A `~salp.dal.dal.ParquetDal` is a handle on a directory. Creating one does not touch the
 disk; directories are created on the first write.
 
 .. doctest::
 
    >>> from pathlib import Path
    >>> import polars as pl
-   >>> from salp.dal.dal import Dal
-   >>> dal = Dal(Path("data"))
+   >>> from salp.dal.dal import ParquetDal
+   >>> dal = ParquetDal(Path("data"))
 
 Write data
 ----------
@@ -38,13 +38,13 @@ directory level, so ``"sales", "eu"`` is stored in ``sales/eu/``.
    >>> dal.write(orders, "sales", "orders").name
    'v0'
 
-`~salp.dal.dal.Dal.write` accepts a `polars.DataFrame` or a `polars.LazyFrame`
+`~salp.dal.dal.ParquetDal.write` accepts a `polars.DataFrame` or a `polars.LazyFrame`
 and returns the new version directory.
 
 Read data
 ---------
 
-`~salp.dal.dal.Dal.read` returns a `polars.LazyFrame` over the latest version.
+`~salp.dal.dal.ParquetDal.read` returns a `polars.LazyFrame` over the latest version.
 Nothing is loaded until you call ``collect``.
 
 .. doctest::
@@ -56,7 +56,7 @@ Nothing is loaded until you call ``collect``.
 Append data
 -----------
 
-`~salp.dal.dal.Dal.append` adds a new file to the latest version. Columns may be
+`~salp.dal.dal.ParquetDal.append` adds a new file to the latest version. Columns may be
 in any order and are cast to the stored types.
 
 .. doctest::
@@ -70,7 +70,7 @@ in any order and are cast to the stored types.
 Write a new version
 -------------------
 
-Writing again replaces what `~salp.dal.dal.Dal.read` returns. The schema of a new
+Writing again replaces what `~salp.dal.dal.ParquetDal.read` returns. The schema of a new
 version does not have to match the old one.
 
 .. doctest::
