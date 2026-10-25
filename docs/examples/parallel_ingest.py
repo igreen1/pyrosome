@@ -5,7 +5,7 @@ from pathlib import Path
 
 import polars as pl
 
-from salp.dal.dal import DAL
+from salp.dal.dal import Dal
 
 DATA_DIR = Path("data")
 
@@ -20,12 +20,12 @@ def ingest(batch_number: int) -> Path:
         The file the batch was appended as.
     """
     batch = pl.DataFrame({"batch": [batch_number], "value": [batch_number * 10]})
-    return DAL(DATA_DIR).append(batch, "metrics")
+    return Dal(DATA_DIR).append(batch, "metrics")
 
 
 if __name__ == "__main__":
-    DAL(DATA_DIR).write(pl.DataFrame({"batch": [0], "value": [0]}), "metrics")
+    Dal(DATA_DIR).write(pl.DataFrame({"batch": [0], "value": [0]}), "metrics")
     with ProcessPoolExecutor() as pool:
         files = list(pool.map(ingest, range(1, 100)))
-    rows = DAL(DATA_DIR).read("metrics").collect().height
+    rows = Dal(DATA_DIR).read("metrics").collect().height
     print(f"{len(files)} batches appended as {len(set(files))} files, {rows} rows")

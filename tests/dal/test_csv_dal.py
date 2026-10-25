@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from salp.dal.dal import DAL, CsvDal
+from salp.dal.dal import Dal, CsvDal
 
 KEYS = ("profile", "sub")
 
@@ -66,7 +66,7 @@ class TestRead:
 
     def test_does_not_read_parquet_data(self, tmp_path, df):
         # the manifest is shared, but a CSV reader must not pick up parquet files
-        DAL(tmp_path).write(df, *KEYS)
+        Dal(tmp_path).write(df, *KEYS)
         with pytest.raises(FileNotFoundError):
             CsvDal(tmp_path).read(*KEYS)
 

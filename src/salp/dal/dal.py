@@ -9,7 +9,7 @@ import stat
 import uuid
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, cast, override
+from typing import TYPE_CHECKING, Final, Literal, cast, overload, override
 
 lazy import polars as pl
 
@@ -24,6 +24,32 @@ _DATA_FILE_PATTERN = {
     "parquet": re.compile(r"(\d+)\.parquet"),
     "csv": re.compile(r"(\d+)\.csv"),
 }
+
+
+@overload
+def get_accessor(file_ending: Literal["parquet"]) -> type[Dal]: ...
+@overload
+def get_accessor(file_ending: Literal["csv"]) -> type[CsvDal]: ...
+def get_accessor(file_ending: str) -> type[Dal]:
+    """Get the accessor class that stores files with the given file ending.
+
+    Args:
+        file_ending: The file format to store, without a leading dot.
+
+    Returns:
+        `Dal` for ``"parquet"`` or `CsvDal` for ``"csv"``.
+
+    Raises:
+        ValueError: If file_ending is not a supported format.
+    """
+    match file_ending:
+        case "csv":
+            return CsvDal
+        case "parquet":
+            return Dal
+        case _:
+            msg = f"Invalid file ending for accessor: {file_ending!r}"
+            raise ValueError(msg)
 
 
 def _tmp_path(directory: Path, suffix: str) -> Path:
@@ -149,7 +175,7 @@ def _claim_first_free[T](candidates: Iterable[T], claim: Callable[[T], None]) ->
     raise RuntimeError(msg)
 
 
-class DAL:
+class Dal:
     """Data Access Layer storing versioned data as parquet files.
 
     Each profile, named by one or more keys, is a directory under
@@ -159,8 +185,8 @@ class DAL:
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp.dal.dal import DAL
-        >>> dal = DAL(Path("data"))
+        >>> from salp.dal.dal import Dal
+        >>> dal = Dal(Path("data"))
         >>> dal.write(pl.DataFrame({"x": [1, 2]}), "example").name
         'v0'
         >>> dal.append(pl.DataFrame({"x": [3]}), "example").name
@@ -427,8 +453,8 @@ class DAL:
         return _data_files(latest_dir, extension=self.extension)
 
 
-class CsvDal(DAL):
-    """Same as a DAL but uses csv files instead of parquet files.
+class CsvDal(Dal):
+    """Same as a Dal but uses csv files instead of parquet files.
 
     Broadly recommend using the parquet version, but this exists for user convenience.
     Column types are inferred when the files are read back.

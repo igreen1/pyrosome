@@ -7,9 +7,9 @@ Short solutions to common tasks. The recipes build on each other and start from:
 
    >>> from pathlib import Path
    >>> import polars as pl
-   >>> from salp.dal.dal import DAL
+   >>> from salp.dal.dal import Dal
    >>> data_dir = Path("data")
-   >>> dal = DAL(data_dir)
+   >>> dal = Dal(data_dir)
 
 Keep a snapshot of a full refresh
 ---------------------------------
@@ -39,13 +39,13 @@ file, so a failed batch never damages earlier ones.
    >>> dal.read("events").collect()["event"].to_list()
    ['start', 'click', 'click', 'stop']
 
-To start a profile that may not exist yet, `~salp.dal.dal.DAL.append` falls back
+To start a profile that may not exist yet, `~salp.dal.dal.Dal.append` falls back
 to a write and warns. Write the first batch explicitly to avoid the warning.
 
 Query without loading everything
 --------------------------------
 
-`~salp.dal.dal.DAL.read` is lazy. Filter and select before ``collect`` so polars
+`~salp.dal.dal.Dal.read` is lazy. Filter and select before ``collect`` so polars
 only reads the rows and columns it needs.
 
 .. doctest::
@@ -62,7 +62,7 @@ only reads the rows and columns it needs.
 Read data that may not exist yet
 --------------------------------
 
-`~salp.dal.dal.DAL.read` raises `FileNotFoundError` when a profile has no data.
+`~salp.dal.dal.Dal.read` raises `FileNotFoundError` when a profile has no data.
 
 .. doctest::
 
@@ -110,7 +110,7 @@ version with one file. The lazy read streams straight into the new version.
 Change the schema
 -----------------
 
-`~salp.dal.dal.DAL.append` rejects data with different columns. To add a column,
+`~salp.dal.dal.Dal.append` rejects data with different columns. To add a column,
 write a new version that includes it.
 
 .. doctest::
@@ -156,7 +156,7 @@ Remove old versions
 
 Delete version directories older than the last few. Only do this when no reader
 can still be using them, since a lazy frame from an earlier
-`~salp.dal.dal.DAL.read` fails if its files disappear.
+`~salp.dal.dal.Dal.read` fails if its files disappear.
 
 .. doctest::
 
