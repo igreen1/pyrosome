@@ -42,7 +42,7 @@ Consequences that shape the code:
 
 Two modules in `src/salp/dal/`:
 
-- `dal.py`: the `Dal` protocol (public API: `read`, `write`, `append`), `ParquetDal` (explicitly implements `Dal`), `CsvDal` (subclasses `ParquetDal`, overriding only `_sink`/`_scan` and `extension`), `get_accessor` (file ending → class), and `DataManifestFile`.
+- `dal.py`: the `Dal` protocol (public API: `read`, `write`, `append`), `_FileDal` (abstract `Dal` implementation holding all the file operations), `ParquetDal` and `CsvDal` (subclass `_FileDal`, defining only `_sink`/`_scan` and `extension`), `get_accessor` (file ending → class), and `DataManifestFile`.
 - `simple_file_lock.py`: `SimpleWriteLock`, an advisory cross-process lock implemented as a `<file>.write_lock` sibling file, with timeout/poll retry.
 
 On-disk layout: `data_directory/<keys...>/` is a *profile* containing `manifest.json` (`{"latest_data_dir": "vN"}`) and one `vN/` dir per version holding `0.<ext>`, `1.<ext>`, … Keys are path components and must resolve inside `data_directory`.
@@ -52,7 +52,7 @@ The concurrency design is the non-obvious part, spread across both modules:
 - `append` sinks to a tmp file, claims the next free index by exclusively creating a hidden `.<idx>.<ext>.claim` marker (`touch(exist_ok=False)`), then `replace`s the tmp file to `<idx>.<ext>`. Markers are never deleted: deleting one would let a later append re-claim the index and silently replace published data (a plain rename overwrites on POSIX). Hard links aren't used because many SMB shares don't support them.
 - Data files are made read only before being moved into place; `_remove_tmp_file` restores write permission before deleting a leftover tmp file because Windows can't delete read-only files.
 - The manifest is replaced atomically (tmp + `replace`), so readers take no lock.
-- Readers only see files matching `_DATA_FILE_PATTERN[extension]` (`^\d+\.<ext>$`). Adding a new format means adding a pattern there as well as subclassing `ParquetDal`.
+- Readers only see files matching `_DATA_FILE_PATTERN[extension]` (`^\d+\.<ext>$`). Adding a new format means adding a pattern there as well as subclassing `_FileDal`.
 
 Known limitation: `ParquetDal` and `CsvDal` share the manifest format, so mixing formats in one profile hides the other format's data.
 

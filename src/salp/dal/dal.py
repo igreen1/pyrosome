@@ -8,6 +8,7 @@ import re
 import stat
 import uuid
 import warnings
+from abc import abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, overload, override
 
@@ -30,7 +31,7 @@ _DATA_FILE_PATTERN = {
 def get_accessor(file_ending: Literal["parquet"]) -> type[ParquetDal]: ...
 @overload
 def get_accessor(file_ending: Literal["csv"]) -> type[CsvDal]: ...
-def get_accessor(file_ending: str) -> type[ParquetDal]:
+def get_accessor(file_ending: str) -> type[ParquetDal | CsvDal]:
     """Get the accessor class that stores files with the given file ending.
 
     Args:
@@ -228,44 +229,17 @@ class Dal(Protocol):
         ...
 
 
-class ParquetDal(Dal):
-    """Data Access Layer storing versioned data as parquet files.
-
-    Each profile, named by one or more keys, is a directory under
-    `data_directory`. Every `write` creates a new version and `append` adds files
-    to the latest version, so existing data is never modified in place.
-
-    Example:
-        >>> from pathlib import Path
-        >>> import polars as pl
-        >>> from salp.dal.dal import ParquetDal
-        >>> dal = ParquetDal(Path("data"))
-        >>> dal.write(pl.DataFrame({"x": [1, 2]}), "example").name
-        'v0'
-        >>> dal.append(pl.DataFrame({"x": [3]}), "example").name
-        '1.parquet'
-        >>> dal.read("example").collect()["x"].to_list()
-        [1, 2, 3]
-    """
+class _FileDal(Dal):
+    """Abstract file DAL with read/write/append for files."""
 
     data_directory: Path
     """The directory where data files are stored."""
 
-    extension: str = "parquet"
+    extension: str
     """File extension of the data files, without the leading dot."""
 
-    def __init__(self, data_directory: Path | str | os.PathLike[str]) -> None:
-        """Create a data access layer. Nothing is read or written until used.
-
-        Args:
-            data_directory: The directory where data files are stored.
-
-        Returns:
-            None.
-        """
-        self.data_directory = Path(os.fspath(data_directory))
-
     @staticmethod
+    @abstractmethod
     def _sink(data: pl.LazyFrame, output_file: Path) -> None:
         """Wrapper so we can replace our file type easily.
 
@@ -279,9 +253,9 @@ class ParquetDal(Dal):
         Raises:
             polars.exceptions.PolarsError: If the data cannot be computed or written.
         """
-        data.sink_parquet(output_file)
 
     @staticmethod
+    @abstractmethod
     def _scan(output_paths: Path | list[Path]) -> pl.LazyFrame:
         """Wrapper so we can replace our file type easily.
 
@@ -294,7 +268,17 @@ class ParquetDal(Dal):
         Raises:
             polars.exceptions.PolarsError: If the files cannot be scanned.
         """
-        return pl.scan_parquet(output_paths)
+
+    def __init__(self, data_directory: Path | str | os.PathLike[str]) -> None:
+        """Create a data access layer. Nothing is read or written until used.
+
+        Args:
+            data_directory: The directory where data files are stored.
+
+        Returns:
+            None.
+        """
+        self.data_directory = Path(os.fspath(data_directory))
 
     @override
     def read(self, *keys: str) -> pl.LazyFrame:
@@ -509,7 +493,64 @@ class ParquetDal(Dal):
         return _data_files(latest_dir, extension=self.extension)
 
 
-class CsvDal(ParquetDal):
+class ParquetDal(_FileDal):
+    """Data Access Layer storing versioned data as parquet files.
+
+    Each profile, named by one or more keys, is a directory under
+    `data_directory`. Every `write` creates a new version and `append` adds files
+    to the latest version, so existing data is never modified in place.
+
+    Example:
+        >>> from pathlib import Path
+        >>> import polars as pl
+        >>> from salp.dal.dal import ParquetDal
+        >>> dal = ParquetDal(Path("data"))
+        >>> dal.write(pl.DataFrame({"x": [1, 2]}), "example").name
+        'v0'
+        >>> dal.append(pl.DataFrame({"x": [3]}), "example").name
+        '1.parquet'
+        >>> dal.read("example").collect()["x"].to_list()
+        [1, 2, 3]
+    """
+
+    extension: str = "parquet"
+    """File extension of the data files, without the leading dot."""
+
+    @override
+    @staticmethod
+    def _sink(data: pl.LazyFrame, output_file: Path) -> None:
+        """Wrapper so we can replace our file type easily.
+
+        Args:
+            data: The data to write.
+            output_file: The file to write to.
+
+        Returns:
+            None.
+
+        Raises:
+            polars.exceptions.PolarsError: If the data cannot be computed or written.
+        """
+        data.sink_parquet(output_file)
+
+    @override
+    @staticmethod
+    def _scan(output_paths: Path | list[Path]) -> pl.LazyFrame:
+        """Wrapper so we can replace our file type easily.
+
+        Args:
+            output_paths: The data files to scan.
+
+        Returns:
+            A lazy scan over output_paths.
+
+        Raises:
+            polars.exceptions.PolarsError: If the files cannot be scanned.
+        """
+        return pl.scan_parquet(output_paths)
+
+
+class CsvDal(_FileDal):
     """Same as a ParquetDal but uses csv files instead of parquet files.
 
     Broadly recommend using the parquet version, but this exists for user convenience.
