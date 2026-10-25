@@ -7,7 +7,7 @@ Short solutions to common tasks. The recipes build on each other and start from:
 
    >>> from pathlib import Path
    >>> import polars as pl
-   >>> from salp.dal.dal import ParquetDal
+   >>> from salp.dal import ParquetDal
    >>> data_dir = Path("data")
    >>> dal = ParquetDal(data_dir)
 
@@ -39,13 +39,13 @@ file, so a failed batch never damages earlier ones.
    >>> dal.read("events").collect()["event"].to_list()
    ['start', 'click', 'click', 'stop']
 
-To start a profile that may not exist yet, `~salp.dal.dal.ParquetDal.append` falls back
+To start a profile that may not exist yet, `~salp.dal.ParquetDal.append` falls back
 to a write and warns. Write the first batch explicitly to avoid the warning.
 
 Query without loading everything
 --------------------------------
 
-`~salp.dal.dal.ParquetDal.read` is lazy. Filter and select before ``collect`` so polars
+`~salp.dal.ParquetDal.read` is lazy. Filter and select before ``collect`` so polars
 only reads the rows and columns it needs.
 
 .. doctest::
@@ -64,7 +64,7 @@ Filter by column values
 
 For the common case of keeping rows where columns equal given values,
 `~salp.api.SimpleIo` takes the filters as keyword arguments to
-`~salp.api.SimpleIo.read`. It stores parquet, like `~salp.dal.dal.ParquetDal`,
+`~salp.api.SimpleIo.read`. It stores parquet, like `~salp.dal.ParquetDal`,
 so it reads the same data directory. ``None`` matches nulls, and a misspelt column
 name raises straight away rather than at ``collect``.
 
@@ -99,7 +99,7 @@ columns, and an unnamed index is dropped. Converting pandas data needs the
 Read data that may not exist yet
 --------------------------------
 
-`~salp.dal.dal.ParquetDal.read` raises `FileNotFoundError` when a profile has no data.
+`~salp.dal.ParquetDal.read` raises `FileNotFoundError` when a profile has no data.
 
 .. doctest::
 
@@ -147,7 +147,7 @@ version with one file. The lazy read streams straight into the new version.
 Change the schema
 -----------------
 
-`~salp.dal.dal.ParquetDal.append` rejects data with different columns. To add a column,
+`~salp.dal.ParquetDal.append` rejects data with different columns. To add a column,
 write a new version that includes it.
 
 .. doctest::
@@ -193,13 +193,13 @@ Remove old versions
 
 Delete version directories older than the last few. Only do this when no reader
 can still be using them, since a lazy frame from an earlier
-`~salp.dal.dal.ParquetDal.read` fails if its files disappear.
+`~salp.dal.ParquetDal.read` fails if its files disappear.
 
 .. doctest::
 
    >>> import shutil
    >>> import stat
-   >>> from salp.dal.dal import DataManifestFile
+   >>> from salp.dal import DataManifestFile
    >>> def remove_read_only(remove, path, _error):
    ...     # data files are read only, and Windows can't delete read-only files
    ...     Path(path).chmod(stat.S_IWRITE)
@@ -248,7 +248,7 @@ Keep each format in its own data directory; see the limitations in
 
 .. doctest::
 
-   >>> from salp.dal.dal import CsvDal
+   >>> from salp.dal import CsvDal
    >>> csv_dal = CsvDal(data_dir / "export")
    >>> export_dir = csv_dal.write(dal.read("sales", "eu"), "sales", "eu")
    >>> (export_dir / "0.csv").read_text().splitlines()
@@ -261,13 +261,13 @@ Recover from a crashed writer
 -----------------------------
 
 If a process dies while updating a manifest, its lock file stays behind and
-later writes raise `~salp.dal.simple_file_lock.FileAlreadyLockedError` after
-`~salp.dal.dal.DataManifestFile.LOCK_TIMEOUT` seconds. Once you are sure no
+later writes raise `~salp.simple_file_lock.FileAlreadyLockedError` after
+`~salp.dal.DataManifestFile.LOCK_TIMEOUT` seconds. Once you are sure no
 writer is running, remove the lock file.
 
 .. doctest::
 
-   >>> from salp.dal.simple_file_lock import file_is_locked
+   >>> from salp.simple_file_lock import file_is_locked
    >>> manifest_path = data_dir / "events" / "manifest.json"
    >>> lock_file = manifest_path.with_name("manifest.json.write_lock")
    >>> lock_file.touch()  # simulate a crashed writer

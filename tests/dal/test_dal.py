@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from salp.dal.dal import ParquetDal, DataManifestFile
+from salp.dal import ParquetDal, DataManifestFile
 from salp.simple_file_lock import FileAlreadyLockedError, SimpleWriteLock
 
 WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH

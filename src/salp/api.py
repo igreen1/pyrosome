@@ -174,10 +174,10 @@ class SimpleIo:
             ValueError: If there are no keys, they lead outside the data directory, or
                 the profile's manifest names an invalid version.
             TypeError: If the profile's manifest file is corrupt.
-            salp.dal.simple_file_lock.FileAlreadyLockedError: If another process holds
+            salp.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than
-                `salp.dal.dal.DataManifestFile.LOCK_TIMEOUT`.
-            salp.dal.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                `salp.dal.DataManifestFile.LOCK_TIMEOUT`.
+            salp.simple_file_lock.FileLockPermissionError: If the manifest cannot
                 be locked.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the profile directory cannot be created or written to.

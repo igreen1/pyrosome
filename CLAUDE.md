@@ -18,7 +18,7 @@ SMB shares are second-class: support them where it's practical, but they are low
 uv sync --all-groups                     # dev + docs dependencies
 uv run pytest                            # unit tests AND every doc/README/docstring example
 uv run pytest tests/dal/test_dal.py::TestWrite::test_write_then_read
-uv run pytest docs/recipes.rst           # one docs page's doctests (also README.md, src/salp/dal/dal.py)
+uv run pytest docs/recipes.rst           # one docs page's doctests (also README.md, src/salp/dal.py)
 uv run ruff check src docs conftest.py && uv run ruff format --check src docs conftest.py
 uv run ty check src docs conftest.py
 uv run mypy src docs conftest.py
@@ -40,7 +40,7 @@ Consequences that shape the code:
 
 ## Architecture
 
-`src/salp/api.py` holds `SimpleIo`, a thin parquet-only wrapper whose `read` takes equality filters as keyword arguments (`None` matches nulls; floats are rejected), and whose `write`/`append` also take pandas frames (named index levels become columns, an unnamed index is dropped). pandas is never imported by salp itself: it's an optional extra (`salp[pandas]`, with pyarrow, which polars needs for pandas' string columns), and a dev dependency with `pandas-stubs`. The storage itself is two modules in `src/salp/dal/`:
+`src/salp/api.py` holds `SimpleIo`, a thin parquet-only wrapper whose `read` takes equality filters as keyword arguments (`None` matches nulls; floats are rejected), and whose `write`/`append` also take pandas frames (named index levels become columns, an unnamed index is dropped). pandas is never imported by salp itself: it's an optional extra (`salp[pandas]`, with pyarrow, which polars needs for pandas' string columns), and a dev dependency with `pandas-stubs`. The storage itself is two modules in `src/salp/`:
 
 - `dal.py`: the `Dal` protocol (public API: `read`, `write`, `append`), `_FileDal` (abstract `Dal` implementation holding all the file operations), `ParquetDal` and `CsvDal` (subclass `_FileDal`, defining only `_sink`/`_scan` and `extension`), `get_accessor` (file ending → class), and `DataManifestFile`.
 - `simple_file_lock.py`: `SimpleWriteLock`, an advisory cross-process lock implemented as a `<file>.write_lock` sibling file, with timeout/poll retry.

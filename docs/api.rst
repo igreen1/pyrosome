@@ -4,18 +4,20 @@ API reference
 Data access
 -----------
 
-.. automodule:: salp.dal.dal
+.. automodule:: salp.dal
    :no-members:
 
-.. autoclass:: salp.dal.dal.Dal
+.. autoclass:: salp.dal.Dal
 
-.. autoclass:: salp.dal.dal.ParquetDal
+.. autoclass:: salp.dal.ParquetDal
+   :inherited-members:
 
-.. autoclass:: salp.dal.dal.CsvDal
+.. autoclass:: salp.dal.CsvDal
+   :inherited-members:
 
-.. autoclass:: salp.dal.dal.DataManifestFile
+.. autoclass:: salp.dal.DataManifestFile
 
-.. autofunction:: salp.dal.dal.get_accessor
+.. autofunction:: salp.dal.get_accessor
 
 Filtering reads
 ---------------
@@ -25,4 +27,4 @@ Filtering reads
 File locking
 ------------
 
-.. automodule:: salp.dal.simple_file_lock
+.. automodule:: salp.simple_file_lock
