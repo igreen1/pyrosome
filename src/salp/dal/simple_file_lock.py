@@ -41,7 +41,9 @@ class SimpleWriteLock:
     blocked.
 
     Example:
-        >>> target = data_dir / "notes.txt"
+        >>> from pathlib import Path
+        >>> from salp.dal.simple_file_lock import SimpleWriteLock, file_is_locked
+        >>> target = Path("notes.txt")
         >>> with SimpleWriteLock(target, timeout=1.0):
         ...     file_is_locked(target)
         True

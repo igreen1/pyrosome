@@ -6,11 +6,15 @@ append-only datasets, and reads them back as lazy frames.
 
 .. doctest::
 
-   >>> dal = DAL(data_dir)
-   >>> dal.write(pl.DataFrame({"city": ["Oslo", "Lima"], "temp": [4, 19]}), "weather")
-   PosixPath('.../weather/v0')
-   >>> dal.append(pl.DataFrame({"city": ["Pune"], "temp": [31]}), "weather")
-   PosixPath('.../weather/v0/1.parquet')
+   >>> from pathlib import Path
+   >>> import polars as pl
+   >>> from salp.dal.dal import DAL
+   >>> dal = DAL(Path("data"))
+   >>> weather = pl.DataFrame({"city": ["Oslo", "Lima"], "temp": [4, 19]})
+   >>> dal.write(weather, "weather").as_posix()
+   'data/weather/v0'
+   >>> dal.append(pl.DataFrame({"city": ["Pune"], "temp": [31]}), "weather").as_posix()
+   'data/weather/v0/1.parquet'
    >>> dal.read("weather").filter(pl.col("temp") > 10).collect()["city"].to_list()
    ['Lima', 'Pune']
 
@@ -22,6 +26,9 @@ append-only datasets, and reads them back as lazy frames.
   each other, and readers never see half-written data.
 * **Lazy**: `~salp.dal.dal.DAL.read` returns a `polars.LazyFrame`, so filters
   and column selections are pushed down into the file scan.
+
+Every example in these docs is run as a test, so they stay in step with the
+code.
 
 .. toctree::
    :maxdepth: 2
