@@ -2,9 +2,11 @@
 
 import itertools
 import json
+import os
 import re
 import uuid
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Final, cast, override
 
 lazy import polars as pl
@@ -13,7 +15,6 @@ from salp.dal.simple_file_lock import SimpleWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
-    from pathlib import Path
 
 
 _DATA_DIR_PATTERN = re.compile(r"v(\d+)")
@@ -117,7 +118,7 @@ class DAL:
     extension: str = "parquet"
     """File extension of the data files, without the leading dot."""
 
-    def __init__(self, data_directory: Path) -> None:
+    def __init__(self, data_directory: Path | str | os.PathLike[str]) -> None:
         """Create a data access layer. Nothing is read or written until used.
 
         Args:
@@ -126,7 +127,7 @@ class DAL:
         Returns:
             None.
         """
-        self.data_directory = data_directory
+        self.data_directory = Path(os.fspath(data_directory))
 
     @staticmethod
     def _sink(data: pl.LazyFrame, output_file: Path) -> None:
