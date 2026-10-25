@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, overload, over
 
 lazy import polars as pl
 
-from salp.dal.simple_file_lock import SimpleWriteLock
+from salp.simple_file_lock import SimpleWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
