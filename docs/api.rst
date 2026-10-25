@@ -9,6 +9,8 @@ Data access
 
 .. autoclass:: salp.dal.dal.Dal
 
+.. autoclass:: salp.dal.dal.ParquetDal
+
 .. autoclass:: salp.dal.dal.CsvDal
 
 .. autoclass:: salp.dal.dal.DataManifestFile

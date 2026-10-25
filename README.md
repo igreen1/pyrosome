@@ -20,7 +20,7 @@ salp handles this with a small, predictable layout on the filesystem. There is n
 - **Append-only**: `append` adds a new file to the latest version and never rewrites existing files. Columns are reordered and cast to match the stored data.
 - **Safe with several processes**: versions are claimed with an atomic `mkdir`, appends claim their index by exclusively creating a marker file so they never overwrite each other, and the manifest naming the latest version is replaced in one step.
 - **Lazy**: `read` returns a `polars.LazyFrame`, so filters and column selections are pushed down into the file scan.
-- **Parquet or CSV**: `Dal` stores parquet; `CsvDal` has the same API and stores CSV for people and tools that need to open the files directly.
+- **Parquet or CSV**: `ParquetDal` stores parquet; `CsvDal` has the same API and stores CSV for people and tools that need to open the files directly.
 
 Data is organised into *profiles*, named by one or more keys:
 
@@ -81,8 +81,8 @@ This installs the development tools (pytest, ruff, ty, mypy, pylint) and the doc
 ```pycon
 >>> from pathlib import Path
 >>> import polars as pl
->>> from salp.dal.dal import Dal
->>> dal = Dal(Path("data"))
+>>> from salp.dal.dal import ParquetDal
+>>> dal = ParquetDal(Path("data"))
 >>> orders = pl.DataFrame(
 ...     {"order_id": [1, 2, 3], "region": ["eu", "eu", "us"], "total": [9.5, 20.0, 7.25]}
 ... )
@@ -125,7 +125,7 @@ Writing again creates `v1`, and `read` now returns only the new data. The earlie
 
 ```
 
-To store CSV instead, use `CsvDal` with the same methods. Keep each format in its own data directory, because a CSV write to a parquet profile hides the parquet data from `Dal`:
+To store CSV instead, use `CsvDal` with the same methods. Keep each format in its own data directory, because a CSV write to a parquet profile hides the parquet data from `ParquetDal`:
 
 ```pycon
 >>> from salp.dal.dal import CsvDal

@@ -9,7 +9,7 @@ import stat
 import uuid
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, cast, overload, override
+from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, overload, override
 
 lazy import polars as pl
 
@@ -27,17 +27,17 @@ _DATA_FILE_PATTERN = {
 
 
 @overload
-def get_accessor(file_ending: Literal["parquet"]) -> type[Dal]: ...
+def get_accessor(file_ending: Literal["parquet"]) -> type[ParquetDal]: ...
 @overload
 def get_accessor(file_ending: Literal["csv"]) -> type[CsvDal]: ...
-def get_accessor(file_ending: str) -> type[Dal]:
+def get_accessor(file_ending: str) -> type[ParquetDal]:
     """Get the accessor class that stores files with the given file ending.
 
     Args:
         file_ending: The file format to store, without a leading dot.
 
     Returns:
-        `Dal` for ``"parquet"`` or `CsvDal` for ``"csv"``.
+        `ParquetDal` for ``"parquet"`` or `CsvDal` for ``"csv"``.
 
     Raises:
         ValueError: If file_ending is not a supported format.
@@ -46,7 +46,7 @@ def get_accessor(file_ending: str) -> type[Dal]:
         case "csv":
             return CsvDal
         case "parquet":
-            return Dal
+            return ParquetDal
         case _:
             msg = f"Invalid file ending for accessor: {file_ending!r}"
             raise ValueError(msg)
@@ -175,7 +175,60 @@ def _claim_first_free[T](candidates: Iterable[T], claim: Callable[[T], None]) ->
     raise RuntimeError(msg)
 
 
-class Dal:
+class Dal(Protocol):
+    """Versioned, append-only storage for data frames, whatever the file format.
+
+    Example:
+        >>> from pathlib import Path
+        >>> import polars as pl
+        >>> from salp.dal.dal import CsvDal, Dal, ParquetDal
+        >>> def save(dal: Dal) -> str:
+        ...     return dal.write(pl.DataFrame({"x": [1]}), "example").name
+        >>> save(ParquetDal(Path("parquet"))), save(CsvDal(Path("csv")))
+        ('v0', 'v0')
+    """
+
+    def read(self, *keys: str) -> pl.LazyFrame:
+        """Read data from the latest version of the data described by keys.
+
+        Args:
+            *keys: Path components naming the profile.
+
+        Returns:
+            A lazy scan over every data file in the latest version.
+
+        Raises:
+            FileNotFoundError: If there is no data for keys.
+        """
+        ...
+
+    def write(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
+        """Write the data as a new version.
+
+        Args:
+            data: The data to write.
+            *keys: Path components naming the profile.
+
+        Returns:
+            The versioned directory the data was written to.
+        """
+        ...
+
+    def append(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
+        """Add a new file to the latest version without touching existing files.
+
+        Args:
+            data: The data to append. Its columns must match the existing data.
+            *keys: Path components naming the profile.
+
+        Returns:
+            The path of the new file, or the new versioned directory if there was no
+            existing data.
+        """
+        ...
+
+
+class ParquetDal(Dal):
     """Data Access Layer storing versioned data as parquet files.
 
     Each profile, named by one or more keys, is a directory under
@@ -185,8 +238,8 @@ class Dal:
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp.dal.dal import Dal
-        >>> dal = Dal(Path("data"))
+        >>> from salp.dal.dal import ParquetDal
+        >>> dal = ParquetDal(Path("data"))
         >>> dal.write(pl.DataFrame({"x": [1, 2]}), "example").name
         'v0'
         >>> dal.append(pl.DataFrame({"x": [3]}), "example").name
@@ -243,6 +296,7 @@ class Dal:
         """
         return pl.scan_parquet(output_paths)
 
+    @override
     def read(self, *keys: str) -> pl.LazyFrame:
         """Read data from the latest version of the data described by keys.
 
@@ -263,6 +317,7 @@ class Dal:
             raise FileNotFoundError(msg)
         return self._scan(list(latest_data))
 
+    @override
     def write(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
         """Write the data as a new version.
 
@@ -301,6 +356,7 @@ class Dal:
         manifest.commit_data_dir(output_dir)
         return output_dir
 
+    @override
     def append(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
         """Add a new file to the latest data directory without touching existing files.
 
@@ -453,8 +509,8 @@ class Dal:
         return _data_files(latest_dir, extension=self.extension)
 
 
-class CsvDal(Dal):
-    """Same as a Dal but uses csv files instead of parquet files.
+class CsvDal(ParquetDal):
+    """Same as a ParquetDal but uses csv files instead of parquet files.
 
     Broadly recommend using the parquet version, but this exists for user convenience.
     Column types are inferred when the files are read back.

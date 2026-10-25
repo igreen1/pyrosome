@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from salp.dal.dal import Dal, DataManifestFile
+from salp.dal.dal import ParquetDal, DataManifestFile
 from salp.dal.simple_file_lock import FileAlreadyLockedError, SimpleWriteLock
 
 WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
@@ -19,7 +19,7 @@ KEYS = ("profile", "sub")
 
 @pytest.fixture
 def dal(tmp_path):
-    return Dal(tmp_path)
+    return ParquetDal(tmp_path)
 
 
 @pytest.fixture
@@ -27,7 +27,7 @@ def df():
     return pl.DataFrame({"a": [1, 2], "b": ["x", "y"]})
 
 
-def manifest_contents(dal: Dal, *keys: str) -> dict:
+def manifest_contents(dal: ParquetDal, *keys: str) -> dict:
     return json.loads(
         (dal.data_directory.joinpath(*keys) / "manifest.json").read_text()
     )
@@ -84,7 +84,7 @@ class TestWrite:
         def failing_sink(_data, _output_file):
             raise RuntimeError
 
-        monkeypatch.setattr(Dal, "_sink", staticmethod(failing_sink))
+        monkeypatch.setattr(ParquetDal, "_sink", staticmethod(failing_sink))
         with pytest.raises(RuntimeError):
             dal.write(df, *KEYS)
         assert manifest_contents(dal, *KEYS) == {"latest_data_dir": "v0"}
@@ -267,11 +267,11 @@ class TestManifest:
 
 
 def _write(data_directory, keys):
-    return Dal(data_directory).write(pl.DataFrame({"a": [1, 2]}), *keys)
+    return ParquetDal(data_directory).write(pl.DataFrame({"a": [1, 2]}), *keys)
 
 
 def _append(data_directory, keys):
-    return Dal(data_directory).append(pl.DataFrame({"a": [1, 2]}), *keys)
+    return ParquetDal(data_directory).append(pl.DataFrame({"a": [1, 2]}), *keys)
 
 
 class TestConcurrency:
@@ -281,12 +281,12 @@ class TestConcurrency:
         with ProcessPoolExecutor(8) as executor:
             dirs = list(executor.map(_write, [tmp_path] * self.N, [KEYS] * self.N))
         assert len(set(dirs)) == self.N
-        assert manifest_contents(Dal(tmp_path), *KEYS) == {
+        assert manifest_contents(ParquetDal(tmp_path), *KEYS) == {
             "latest_data_dir": f"v{self.N - 1}"
         }
 
     def test_concurrent_appends(self, tmp_path):
-        dal = Dal(tmp_path)
+        dal = ParquetDal(tmp_path)
         output_dir = _write(tmp_path, KEYS)
         with ProcessPoolExecutor(8) as executor:
             files = list(executor.map(_append, [tmp_path] * self.N, [KEYS] * self.N))
