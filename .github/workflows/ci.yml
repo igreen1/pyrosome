@@ -5,6 +5,12 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      bump:
+        description: Version part to bump (dispatching on main always releases)
+        type: choice
+        options: [patch, minor, major]
+        default: patch
 
 permissions:
   contents: read
@@ -43,6 +49,30 @@ jobs:
           enable-cache: true
       - run: uv sync --locked --group dev
       - run: ${{ matrix.run }}
+
+  # The library must work on Linux, macOS and Windows filesystems.
+  test:
+    name: ${{ matrix.suite }} (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        suite: [unit tests, doctests]
+        include:
+          - suite: unit tests
+            paths: tests --ignore=tests/docs
+          # docstrings, docs pages, the README and the literalinclude'd scripts
+          - suite: doctests
+            paths: src docs README.md tests/docs
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: true
+      - run: uv sync --locked --group dev
+      - run: uv run pytest ${{ matrix.paths }}
 
   docs:
     runs-on: ubuntu-latest
@@ -89,3 +119,70 @@ jobs:
           name: dist
           path: dist/
           if-no-files-found: error
+
+  # Decides whether this run on main releases: only when the package changed,
+  # and only from the newest commit (a newer run releases otherwise).
+  release-check:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.decide.outputs.release }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          release=true
+          if [ "$(git ls-remote origin refs/heads/main | cut -f1)" != "$GITHUB_SHA" ]; then
+            echo "::notice::main has moved past $GITHUB_SHA; the newer run will release"
+            release=false
+          elif [ "$EVENT" = push ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null \
+              && git diff --quiet "$BEFORE" "$GITHUB_SHA" -- src pyproject.toml uv.lock; then
+            echo "::notice::No package changes since $BEFORE; not releasing"
+            release=false
+          fi
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+  release:
+    needs: [check, test, docs, build, release-check]
+    if: needs.release-check.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.13.5"
+          enable-cache: true
+      - name: Bump version
+        id: bump
+        env:
+          BUMP: ${{ inputs.bump || 'patch' }}
+        run: |
+          uv version --bump "$BUMP" --no-sync
+          echo "tag=v$(uv version --short)" >> "$GITHUB_OUTPUT"
+      - run: uv build
+      # [skip ci] keeps the bump commit from starting another release if
+      # this is ever switched from GITHUB_TOKEN to a token that triggers runs.
+      - name: Commit and tag
+        env:
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -am "Release $TAG [skip ci]"
+          git tag "$TAG"
+          git push --atomic origin HEAD:main "$TAG"
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.bump.outputs.tag }}
+        run: gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag
