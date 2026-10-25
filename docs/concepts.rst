@@ -74,7 +74,7 @@ raise `ValueError`.
    Traceback (most recent call last):
    ...
    ValueError: At least one key is required
-   >>> dal.read("..")
+   >>> dal.read("..")  # doctest: +IGNORE_EXCEPTION_DETAIL
    Traceback (most recent call last):
    ...
    ValueError: Profile directory data/.. is not within data directory data

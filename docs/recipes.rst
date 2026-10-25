@@ -161,7 +161,12 @@ can still be using them, since a lazy frame from an earlier
 .. doctest::
 
    >>> import shutil
+   >>> import stat
    >>> from salp.dal.dal import DataManifestFile
+   >>> def remove_read_only(remove, path, _error):
+   ...     # data files are read only, and Windows can't delete read-only files
+   ...     Path(path).chmod(stat.S_IWRITE)
+   ...     remove(path)
    >>> def prune(dal, *keys, keep=2):
    ...     profile_dir = dal.data_directory.joinpath(*keys)
    ...     latest = DataManifestFile(profile_dir).get_latest_data_dir()
@@ -169,7 +174,7 @@ can still be using them, since a lazy frame from an earlier
    ...     for version in profile_dir.glob("v*"):
    ...         index = version.name.removeprefix("v")
    ...         if version.is_dir() and index.isdigit() and int(index) < oldest_kept:
-   ...             shutil.rmtree(version)
+   ...             shutil.rmtree(version, onexc=remove_read_only)
    >>> prune(dal, "inventory", keep=2)
    >>> sorted(path.name for path in profile_dir.iterdir())
    ['manifest.json', 'v1', 'v2']

@@ -33,6 +33,12 @@ def manifest_contents(dal: DAL, *keys: str) -> dict:
     )
 
 
+def delete_data_file(path: Path) -> None:
+    """Data files are read only, and Windows can't delete read-only files."""
+    path.chmod(stat.S_IWRITE)
+    path.unlink()
+
+
 def visible_files(directory) -> list[str]:
     """Files in directory, apart from the claim markers left by appends."""
     return sorted(
@@ -104,13 +110,13 @@ class TestRead:
 
     def test_empty_version_dir(self, dal, df):
         output_dir = dal.write(df, *KEYS)
-        (output_dir / "0.parquet").unlink()
+        delete_data_file(output_dir / "0.parquet")
         with pytest.raises(FileNotFoundError):
             dal.read(*KEYS)
 
     def test_manifest_points_to_missing_dir(self, dal, df):
         output_dir = dal.write(df, *KEYS)
-        (output_dir / "0.parquet").unlink()
+        delete_data_file(output_dir / "0.parquet")
         output_dir.rmdir()
         with pytest.raises(FileNotFoundError):
             dal.read(*KEYS)
