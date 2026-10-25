@@ -41,6 +41,9 @@ jobs:
             run: uv run mypy $CHECK_PATHS
           - name: pylint
             run: uv run pylint $CHECK_PATHS
+          # docstrings, docs pages, the README and the literalinclude'd scripts
+          - name: doctests
+            run: uv run pytest src docs README.md tests/docs
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.3.2
