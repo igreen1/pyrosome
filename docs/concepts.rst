@@ -8,7 +8,7 @@ The examples on this page build on each other and start from:
    >>> import json
    >>> from pathlib import Path
    >>> import polars as pl
-   >>> from salp.dal import ParquetDal, CsvDal
+   >>> from salp import ParquetDal, CsvDal
    >>> data_dir = Path("data")
    >>> dal = ParquetDal(data_dir)
 
@@ -31,11 +31,11 @@ version and a manifest that names the latest one:
            └── v1/
                └── 0.parquet
 
-* `~salp.dal.ParquetDal.write` creates the next ``vN`` directory, writes
+* `~salp.ParquetDal.write` creates the next ``vN`` directory, writes
   ``0.parquet`` into it, then points the manifest at it.
-* `~salp.dal.ParquetDal.append` adds ``1.parquet``, ``2.parquet``, and so on to the
+* `~salp.ParquetDal.append` adds ``1.parquet``, ``2.parquet``, and so on to the
   version the manifest points at, plus a hidden ``.claim`` marker for each.
-* `~salp.dal.ParquetDal.read` scans every numbered data file in that version, in
+* `~salp.ParquetDal.read` scans every numbered data file in that version, in
   index order. Other files, such as hidden ``.tmp`` and ``.claim`` files, are
   ignored.
 
@@ -92,7 +92,7 @@ not combine the profiles below ``sales/``; see :ref:`recipe-combine-profiles`.
 Versions
 --------
 
-Versions are never modified by `~salp.dal.ParquetDal.write`. That makes rollbacks and
+Versions are never modified by `~salp.ParquetDal.write`. That makes rollbacks and
 audits simple, but the data directory grows with every write until old versions
 are removed. See :ref:`recipe-prune`.
 
@@ -140,11 +140,11 @@ Limitations
 * **Stale locks are not cleaned up.** If a process is killed while holding the
   manifest lock, writes to that profile fail until the lock file is deleted. See
   :ref:`recipe-stale-lock`.
-* **Exclusive file creation is required** for `~salp.dal.ParquetDal.append`. Local
+* **Exclusive file creation is required** for `~salp.ParquetDal.append`. Local
   disks, SMB and NFSv3 or later support it; NFSv2 does not.
-* **Don't mix formats in one profile.** `~salp.dal.ParquetDal` and
-  `~salp.dal.CsvDal` share the manifest format, so a CSV write to a profile
-  hides its parquet data from `~salp.dal.ParquetDal` and the other way round. Use a
+* **Don't mix formats in one profile.** `~salp.ParquetDal` and
+  `~salp.CsvDal` share the manifest format, so a CSV write to a profile
+  hides its parquet data from `~salp.ParquetDal` and the other way round. Use a
   separate data directory, or separate keys, for each format.
 
   .. doctest::
@@ -155,7 +155,7 @@ Limitations
      ...
      FileNotFoundError: Cannot find files for ('sales', 'orders')
 
-* **CSV types are inferred.** `~salp.dal.CsvDal` stores no schema, so types
+* **CSV types are inferred.** `~salp.CsvDal` stores no schema, so types
   such as dates or small integers come back as strings or ``Int64``.
 
   .. doctest::
@@ -169,5 +169,5 @@ Limitations
      >>> csv_dal.read("typed").collect_schema()
      Schema({'day': String, 'n': Int64})
 
-* **Appends into an old version are not possible.** `~salp.dal.ParquetDal.append`
+* **Appends into an old version are not possible.** `~salp.ParquetDal.append`
   always targets the latest version.

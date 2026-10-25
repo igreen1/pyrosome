@@ -182,7 +182,7 @@ class Dal(Protocol):
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp.dal import CsvDal, Dal, ParquetDal
+        >>> from salp import CsvDal, Dal, ParquetDal
         >>> def save(dal: Dal) -> str:
         ...     return dal.write(pl.DataFrame({"x": [1]}), "example").name
         >>> save(ParquetDal(Path("parquet"))), save(CsvDal(Path("csv")))
@@ -320,7 +320,7 @@ class _FileDal(Dal):
             TypeError: If the profile's manifest file is corrupt.
             salp.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than
-                `DataManifestFile.LOCK_TIMEOUT`.
+                `salp.dal.DataManifestFile.LOCK_TIMEOUT`.
             salp.simple_file_lock.FileLockPermissionError: If the manifest cannot
                 be locked.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
@@ -503,7 +503,7 @@ class ParquetDal(_FileDal):
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp.dal import ParquetDal
+        >>> from salp import ParquetDal
         >>> dal = ParquetDal(Path("data"))
         >>> dal.write(pl.DataFrame({"x": [1, 2]}), "example").name
         'v0'
@@ -559,7 +559,7 @@ class CsvDal(_FileDal):
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp.dal import CsvDal
+        >>> from salp import CsvDal
         >>> csv_dal = CsvDal(Path("data"))
         >>> output_dir = csv_dal.write(pl.DataFrame({"x": [1, 2]}), "example_csv")
         >>> (output_dir / "0.csv").read_text().splitlines()

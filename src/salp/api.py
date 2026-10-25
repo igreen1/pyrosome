@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
 
 type FilterValue = str | int | bool | dt.date | None
-"""A value `SimpleIo.read` can filter a column by.
+"""A value `salp.SimpleIo.read` can filter a column by.
 
 `datetime.datetime` is a `datetime.date`, so both are accepted. Floats are not:
 equality on floats is unreliable, since ``0.1 + 0.2 != 0.3``.
@@ -87,7 +87,7 @@ class SimpleIo:
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp.api import SimpleIo
+        >>> from salp import SimpleIo
         >>> io = SimpleIo(Path("data"))
         >>> df = pl.DataFrame({"x": [1, 2, 2], "y": ["a", "b", None]})
         >>> io.write(df, "example").name

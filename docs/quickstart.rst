@@ -14,14 +14,14 @@ install it from a local checkout:
 Create a data access layer
 --------------------------
 
-A `~salp.dal.ParquetDal` is a handle on a directory. Creating one does not touch the
+A `~salp.ParquetDal` is a handle on a directory. Creating one does not touch the
 disk; directories are created on the first write.
 
 .. doctest::
 
    >>> from pathlib import Path
    >>> import polars as pl
-   >>> from salp.dal import ParquetDal
+   >>> from salp import ParquetDal
    >>> dal = ParquetDal(Path("data"))
 
 Write data
@@ -38,13 +38,13 @@ directory level, so ``"sales", "eu"`` is stored in ``sales/eu/``.
    >>> dal.write(orders, "sales", "orders").name
    'v0'
 
-`~salp.dal.ParquetDal.write` accepts a `polars.DataFrame` or a `polars.LazyFrame`
+`~salp.ParquetDal.write` accepts a `polars.DataFrame` or a `polars.LazyFrame`
 and returns the new version directory.
 
 Read data
 ---------
 
-`~salp.dal.ParquetDal.read` returns a `polars.LazyFrame` over the latest version.
+`~salp.ParquetDal.read` returns a `polars.LazyFrame` over the latest version.
 Nothing is loaded until you call ``collect``.
 
 .. doctest::
@@ -56,7 +56,7 @@ Nothing is loaded until you call ``collect``.
 Append data
 -----------
 
-`~salp.dal.ParquetDal.append` adds a new file to the latest version. Columns may be
+`~salp.ParquetDal.append` adds a new file to the latest version. Columns may be
 in any order and are cast to the stored types.
 
 .. doctest::
@@ -70,7 +70,7 @@ in any order and are cast to the stored types.
 Write a new version
 -------------------
 
-Writing again replaces what `~salp.dal.ParquetDal.read` returns. The schema of a new
+Writing again replaces what `~salp.ParquetDal.read` returns. The schema of a new
 version does not have to match the old one.
 
 .. doctest::
@@ -83,12 +83,12 @@ version does not have to match the old one.
 Use CSV instead of parquet
 --------------------------
 
-`~salp.dal.CsvDal` has the same API but stores CSV files. Use it when people
+`~salp.CsvDal` has the same API but stores CSV files. Use it when people
 or other tools need to open the files directly; prefer parquet otherwise.
 
 .. doctest::
 
-   >>> from salp.dal import CsvDal
+   >>> from salp import CsvDal
    >>> csv_dal = CsvDal(Path("exports"))
    >>> csv_dal.write(orders, "sales", "orders").as_posix()
    'exports/sales/orders/v0'

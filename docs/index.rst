@@ -8,7 +8,7 @@ append-only datasets, and reads them back as lazy frames.
 
    >>> from pathlib import Path
    >>> import polars as pl
-   >>> from salp.dal import ParquetDal
+   >>> from salp import ParquetDal
    >>> dal = ParquetDal(Path("data"))
    >>> weather = pl.DataFrame({"city": ["Oslo", "Lima"], "temp": [4, 19]})
    >>> dal.write(weather, "weather").as_posix()
@@ -18,13 +18,13 @@ append-only datasets, and reads them back as lazy frames.
    >>> dal.read("weather").filter(pl.col("temp") > 10).collect()["city"].to_list()
    ['Lima', 'Pune']
 
-* **Versioned**: every `~salp.dal.ParquetDal.write` creates a new version. Old
+* **Versioned**: every `~salp.ParquetDal.write` creates a new version. Old
   versions stay on disk until you remove them.
-* **Append-only**: `~salp.dal.ParquetDal.append` adds new files and never rewrites
+* **Append-only**: `~salp.ParquetDal.append` adds new files and never rewrites
   existing ones.
 * **Safe with several processes**: concurrent writes and appends never overwrite
   each other, and readers never see half-written data.
-* **Lazy**: `~salp.dal.ParquetDal.read` returns a `polars.LazyFrame`, so filters
+* **Lazy**: `~salp.ParquetDal.read` returns a `polars.LazyFrame`, so filters
   and column selections are pushed down into the file scan.
 
 Every example in these docs is run as a test, so they stay in step with the

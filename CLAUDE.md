@@ -45,6 +45,8 @@ Consequences that shape the code:
 - `dal.py`: the `Dal` protocol (public API: `read`, `write`, `append`), `_FileDal` (abstract `Dal` implementation holding all the file operations), `ParquetDal` and `CsvDal` (subclass `_FileDal`, defining only `_sink`/`_scan` and `extension`), `get_accessor` (file ending → class), and `DataManifestFile`.
 - `simple_file_lock.py`: `SimpleWriteLock`, an advisory cross-process lock implemented as a `<file>.write_lock` sibling file, with timeout/poll retry.
 
+Public names (`SimpleIo`, `Dal`, `ParquetDal`, `CsvDal`, `get_accessor`) are re-exported from `salp/__init__.py`. Docs, examples and docstrings teach `from salp import ParquetDal`, and `docs/api.rst` documents them as `salp.<name>` (cross-reference them that way); rarely needed internals such as `DataManifestFile` and the lock are documented in their submodules. Library code imports from the submodules, never from `salp`, to avoid circular imports.
+
 On-disk layout: `data_directory/<keys...>/` is a *profile* containing `manifest.json` (`{"latest_data_dir": "vN"}`) and one `vN/` dir per version holding `0.<ext>`, `1.<ext>`, … Keys are path components and must resolve inside `data_directory`.
 
 The concurrency design is the non-obvious part, spread across both modules:
