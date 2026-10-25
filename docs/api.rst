@@ -7,7 +7,7 @@ Data access
 .. automodule:: salp.dal.dal
    :no-members:
 
-.. autoclass:: salp.dal.dal.DAL
+.. autoclass:: salp.dal.dal.Dal
 
 .. autoclass:: salp.dal.dal.CsvDal
 

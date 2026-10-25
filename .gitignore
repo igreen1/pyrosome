@@ -11,3 +11,5 @@ wheels/
 
 # Sphinx build output
 docs/_build/
+
+.vscode
