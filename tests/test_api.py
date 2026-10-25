@@ -2,6 +2,7 @@
 
 import datetime as dt
 
+import pandas as pd
 import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
@@ -139,3 +140,58 @@ class TestWriteAndAppend:
         io.write(df, *KEYS)
         with pytest.raises(ValueError):
             io.append(df.drop("price"), *KEYS)
+
+
+class TestPandas:
+    @pytest.fixture
+    def pandas_df(self):
+        return pd.DataFrame(
+            {
+                "name": ["a", "b", None],
+                "count": [1, 2, 3],
+                "price": [0.5, None, 1.5],
+                "at": pd.to_datetime(["2026-01-01", "2026-01-02", None]),
+                "flag": [True, False, True],
+            }
+        )
+
+    def test_write_pandas(self, io, pandas_df):
+        assert io.write(pandas_df, *KEYS).name == "v0"
+        assert_frame_equal(io.read(*KEYS).collect(), pl.from_pandas(pandas_df))
+
+    def test_filter_pandas_data(self, io, pandas_df):
+        io.write(pandas_df, *KEYS)
+        assert io.read(*KEYS, name=None).collect()["count"].to_list() == [3]
+
+    def test_append_pandas_to_polars_data(self, io, pandas_df):
+        io.write(pl.from_pandas(pandas_df), *KEYS)
+        assert io.append(pandas_df, *KEYS).name == "1.parquet"
+        assert io.read(*KEYS).collect()["count"].to_list() == [1, 2, 3, 1, 2, 3]
+
+    def test_append_polars_to_pandas_data(self, io, pandas_df):
+        io.write(pandas_df, *KEYS)
+        io.append(pl.from_pandas(pandas_df), *KEYS)
+        assert io.read(*KEYS).collect().height == 6
+
+    def test_unnamed_index_is_dropped(self, io, pandas_df):
+        filtered = pandas_df[pandas_df["count"] > 1]
+        assert list(filtered.index) == [1, 2]
+        io.write(filtered, *KEYS)
+        assert io.read(*KEYS).collect().columns == list(pandas_df.columns)
+
+    def test_append_after_filtering_matches_columns(self, io, pandas_df):
+        io.write(pandas_df, *KEYS)
+        io.append(pandas_df[pandas_df["count"] > 2], *KEYS)
+        assert io.read(*KEYS).collect()["count"].to_list() == [1, 2, 3, 3]
+
+    def test_named_index_becomes_a_column(self, io):
+        totals = pd.DataFrame({"k": ["a", "a", "b"], "v": [1, 2, 3]}).groupby("k").sum()
+        io.write(totals, *KEYS)
+        result = io.read(*KEYS).collect()
+        assert result.columns == ["k", "v"]
+        assert result.rows() == [("a", 3), ("b", 3)]
+
+    def test_named_multi_index_levels_become_columns(self, io):
+        df = pd.DataFrame({"x": ["a", "b"], "y": [1, 2], "v": [10, 20]})
+        io.write(df.set_index(["x", "y"]), *KEYS)
+        assert io.read(*KEYS).collect().rows() == [("a", 1, 10), ("b", 2, 20)]

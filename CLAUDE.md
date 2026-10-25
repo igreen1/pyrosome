@@ -40,7 +40,7 @@ Consequences that shape the code:
 
 ## Architecture
 
-`src/salp/api.py` holds `SimpleIo`, a thin parquet-only wrapper whose `read` takes equality filters as keyword arguments (`None` matches nulls; floats are rejected). The storage itself is two modules in `src/salp/dal/`:
+`src/salp/api.py` holds `SimpleIo`, a thin parquet-only wrapper whose `read` takes equality filters as keyword arguments (`None` matches nulls; floats are rejected), and whose `write`/`append` also take pandas frames (named index levels become columns, an unnamed index is dropped). pandas is never imported by salp itself: it's an optional extra (`salp[pandas]`, with pyarrow, which polars needs for pandas' string columns), and a dev dependency with `pandas-stubs`. The storage itself is two modules in `src/salp/dal/`:
 
 - `dal.py`: the `Dal` protocol (public API: `read`, `write`, `append`), `_FileDal` (abstract `Dal` implementation holding all the file operations), `ParquetDal` and `CsvDal` (subclass `_FileDal`, defining only `_sink`/`_scan` and `extension`), `get_accessor` (file ending → class), and `DataManifestFile`.
 - `simple_file_lock.py`: `SimpleWriteLock`, an advisory cross-process lock implemented as a `<file>.write_lock` sibling file, with timeout/poll retry.

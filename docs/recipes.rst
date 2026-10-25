@@ -82,6 +82,20 @@ name raises straight away rather than at ``collect``.
 Floats can't be filtered on, because float equality is unreliable. Use
 ``filter`` with a tolerance for those.
 
+`~salp.api.SimpleIo.write` and `~salp.api.SimpleIo.append` also take pandas
+data frames. Named index levels, such as the keys of a ``groupby``, are stored as
+columns, and an unnamed index is dropped. Converting pandas data needs the
+``pandas`` extra, which installs pandas and pyarrow.
+
+.. doctest::
+
+   >>> import pandas as pd
+   >>> views = pd.DataFrame({"page": ["home", "cart", "home"], "ms": [50, 70, 90]})
+   >>> io.write(views[views["ms"] > 60], "views").name
+   'v0'
+   >>> io.read("views", page="home").collect().rows()
+   [('home', 90)]
+
 Read data that may not exist yet
 --------------------------------
 

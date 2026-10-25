@@ -2,7 +2,7 @@
 
 import datetime as dt
 import itertools
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 lazy import polars as pl
 
@@ -11,6 +11,8 @@ from salp.dal import get_accessor
 if TYPE_CHECKING:
     import os
     from pathlib import Path
+
+    import pandas as pd
 
     from salp.dal import Dal
 
@@ -52,6 +54,33 @@ def _equals(column: str, value: object) -> pl.Expr:
             raise TypeError(msg)
 
 
+def _to_polars(
+    data: pl.DataFrame | pl.LazyFrame | pd.DataFrame,
+) -> pl.DataFrame | pl.LazyFrame:
+    """Convert a pandas data frame to polars, leaving polars frames as they are.
+
+    Named index levels, such as the keys of a ``groupby``, become columns. An
+    unnamed index, such as the row numbers left after filtering, is dropped.
+
+    Args:
+        data: The data to convert.
+
+    Returns:
+        The data as a polars frame.
+
+    Raises:
+        ImportError: If pyarrow is not installed and data is a pandas frame with a
+            column that is not a plain numpy type, such as strings.
+    """
+    if isinstance(data, pl.DataFrame | pl.LazyFrame):
+        return data
+    # only the level names are read, so the element type is irrelevant
+    index_names = cast("pd.Index[str]", data.index).names
+    if any(name is not None for name in index_names):
+        data = data.reset_index()
+    return pl.from_pandas(data)
+
+
 class SimpleIo:
     """Parquet storage whose `read` can also filter rows by column values.
 
@@ -67,6 +96,14 @@ class SimpleIo:
         [(2, 'b')]
         >>> io.read("example", y=None).collect().rows()
         [(2, None)]
+
+        `write` and `append` also take pandas data frames:
+
+        >>> import pandas as pd
+        >>> io.append(pd.DataFrame({"x": [3], "y": ["d"]}), "example").name
+        '1.parquet'
+        >>> io.read("example", x=3).collect().rows()
+        [(3, 'd')]
     """
 
     dal: Dal
@@ -116,17 +153,24 @@ class SimpleIo:
             raise pl.exceptions.ColumnNotFoundError(msg)
         return data.filter(*itertools.starmap(_equals, filters.items()))
 
-    def write(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
+    def write(
+        self, data: pl.DataFrame | pl.LazyFrame | pd.DataFrame, *keys: str
+    ) -> Path:
         """Write the data as a new version.
 
+        A pandas data frame's named index levels are stored as columns; an unnamed
+        index is dropped.
+
         Args:
-            data: The data to write.
+            data: The data to write, as a polars or pandas frame.
             *keys: Path components naming the profile.
 
         Returns:
             The versioned directory the data was written to.
 
         Raises:
+            ImportError: If data is a pandas frame needing pyarrow to convert, and
+                pyarrow is not installed.
             ValueError: If there are no keys, they lead outside the data directory, or
                 the profile's manifest names an invalid version.
             TypeError: If the profile's manifest file is corrupt.
@@ -138,13 +182,19 @@ class SimpleIo:
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the profile directory cannot be created or written to.
         """
-        return self.dal.write(data, *keys)
+        return self.dal.write(_to_polars(data), *keys)
 
-    def append(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
+    def append(
+        self, data: pl.DataFrame | pl.LazyFrame | pd.DataFrame, *keys: str
+    ) -> Path:
         """Add a new file to the latest version without touching existing files.
 
+        A pandas data frame's named index levels are stored as columns; an unnamed
+        index is dropped.
+
         Args:
-            data: The data to append. Its columns must match the existing data.
+            data: The data to append, as a polars or pandas frame. Its columns must
+                match the existing data.
             *keys: Path components naming the profile.
 
         Returns:
@@ -152,6 +202,8 @@ class SimpleIo:
             existing data.
 
         Raises:
+            ImportError: If data is a pandas frame needing pyarrow to convert, and
+                pyarrow is not installed.
             ValueError: If the columns do not match the existing data, or for any
                 reason `write` raises it.
             polars.exceptions.InvalidOperationError: If a column cannot be cast to
@@ -162,4 +214,4 @@ class SimpleIo:
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the data directory cannot be written to.
         """
-        return self.dal.append(data, *keys)
+        return self.dal.append(_to_polars(data), *keys)
