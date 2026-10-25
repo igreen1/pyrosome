@@ -59,6 +59,29 @@ only reads the rows and columns it needs.
    ... )
    230.0
 
+Filter by column values
+-----------------------
+
+For the common case of keeping rows where columns equal given values,
+`~salp.api.SimpleIo` takes the filters as keyword arguments to
+`~salp.api.SimpleIo.read`. It stores parquet, like `~salp.dal.dal.ParquetDal`,
+so it reads the same data directory. ``None`` matches nulls, and a misspelt column
+name raises straight away rather than at ``collect``.
+
+.. doctest::
+
+   >>> from salp.api import SimpleIo
+   >>> io = SimpleIo(data_dir)
+   >>> io.read("events", event="click").collect()["ms"].to_list()
+   [120, 340]
+   >>> io.read("events", evnt="click")
+   Traceback (most recent call last):
+   ...
+   polars.exceptions.ColumnNotFoundError: No column named evnt in events
+
+Floats can't be filtered on, because float equality is unreliable. Use
+``filter`` with a tolerance for those.
+
 Read data that may not exist yet
 --------------------------------
 

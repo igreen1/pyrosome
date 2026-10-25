@@ -15,6 +15,13 @@ Data access
 
 .. autoclass:: salp.dal.dal.DataManifestFile
 
+.. autofunction:: salp.dal.dal.get_accessor
+
+Filtering reads
+---------------
+
+.. automodule:: salp.api
+
 File locking
 ------------
 
