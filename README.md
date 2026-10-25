@@ -81,7 +81,7 @@ This installs the development tools (pytest, ruff, ty, mypy, pylint) and the doc
 ```pycon
 >>> from pathlib import Path
 >>> import polars as pl
->>> from salp.dal.dal import ParquetDal
+>>> from salp import ParquetDal
 >>> dal = ParquetDal(Path("data"))
 >>> orders = pl.DataFrame(
 ...     {"order_id": [1, 2, 3], "region": ["eu", "eu", "us"], "total": [9.5, 20.0, 7.25]}
@@ -128,7 +128,7 @@ Writing again creates `v1`, and `read` now returns only the new data. The earlie
 To store CSV instead, use `CsvDal` with the same methods. Keep each format in its own data directory, because a CSV write to a parquet profile hides the parquet data from `ParquetDal`:
 
 ```pycon
->>> from salp.dal.dal import CsvDal
+>>> from salp import CsvDal
 >>> CsvDal(Path("exports")).write(orders, "sales", "orders").as_posix()
 'exports/sales/orders/v0'
 

@@ -9,8 +9,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from salp.dal.dal import ParquetDal, DataManifestFile
-from salp.dal.simple_file_lock import FileAlreadyLockedError, SimpleWriteLock
+from salp.dal import ParquetDal, DataManifestFile
+from salp.simple_file_lock import FileAlreadyLockedError, SimpleWriteLock
 
 WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
 
@@ -41,9 +41,7 @@ def delete_data_file(path: Path) -> None:
 
 def visible_files(directory) -> list[str]:
     """Files in directory, apart from the claim markers left by appends."""
-    return sorted(
-        path.name for path in directory.iterdir() if path.suffix != ".claim"
-    )
+    return sorted(path.name for path in directory.iterdir() if path.suffix != ".claim")
 
 
 class TestWrite:
@@ -195,9 +193,7 @@ class TestAppend:
         assert visible_files(output_dir) == ["0.parquet", "2.parquet"]
         assert_frame_equal(dal.read(*KEYS).collect(), pl.concat([df, df]))
 
-    def test_append_removes_read_only_tmp_file_on_failure(
-        self, dal, df, monkeypatch
-    ):
+    def test_append_removes_read_only_tmp_file_on_failure(self, dal, df, monkeypatch):
         output_dir = dal.write(df, *KEYS)
         real_unlink = Path.unlink
 
