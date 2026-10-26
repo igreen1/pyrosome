@@ -17,10 +17,16 @@ import polars as pl
 from pyrosome.simple_file_lock import SimpleWriteLock
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable
 
 
 _DATA_DIR_PATTERN = re.compile(r"v(\d+)")
+_MANIFEST_FILE_NAME = "manifest.json"
+_KEY_SEPARATORS = re.compile(r"[\\/]")
+_INVALID_KEY_PARTS = frozenset({"", ".", ".."})
+_NON_PORTABLE_CHARS = frozenset(":\0")
+# warnings point at the caller of pyrosome, not at the module that raised them
+_PACKAGE_DIR = str(Path(__file__).parent) + os.sep
 _DATA_FILE_PATTERN = {
     "parquet": re.compile(r"(\d+)\.parquet"),
     "csv": re.compile(r"(\d+)\.csv"),
@@ -51,6 +57,129 @@ def get_accessor(file_ending: str) -> type[ParquetDal | CsvDal]:
         case _:
             msg = f"Invalid file ending for accessor: {file_ending!r}"
             raise ValueError(msg)
+
+
+# the range of values each numeric type holds exactly; a float holds every integer
+# up to the size of its significand
+_EXACT_RANGES: Final[dict[pl.DataType, tuple[int, int]]] = {
+    **{
+        dtype: (-(1 << (bits - 1)), (1 << (bits - 1)) - 1)
+        for dtype, bits in (
+            (pl.Int8(), 8),
+            (pl.Int16(), 16),
+            (pl.Int32(), 32),
+            (pl.Int64(), 64),
+            (pl.Int128(), 128),
+        )
+    },
+    **{
+        dtype: (0, (1 << bits) - 1)
+        for dtype, bits in (
+            (pl.UInt8(), 8),
+            (pl.UInt16(), 16),
+            (pl.UInt32(), 32),
+            (pl.UInt64(), 64),
+        )
+    },
+    pl.Float32(): (-(1 << 24), 1 << 24),
+    pl.Float64(): (-(1 << 53), 1 << 53),
+}
+_FLOATS: Final[frozenset[pl.DataType]] = frozenset({pl.Float32(), pl.Float64()})
+
+
+def _is_lossless_cast(source: pl.DataType, target: pl.DataType) -> bool:
+    """Check that casting from source to target keeps every value exactly.
+
+    Only identical types and widenings are lossless: an integer to a wider integer
+    (or to a float that represents it exactly), a float to a wider float, or an
+    all-null column to anything. Floats never cast losslessly to integers.
+
+    Args:
+        source: The type of the new data.
+        target: The type of the existing data.
+
+    Returns:
+        Whether every value of source is the same value in target.
+    """
+    if source in {target, pl.Null()}:
+        return True
+    source_range = _EXACT_RANGES.get(source)
+    target_range = _EXACT_RANGES.get(target)
+    if source_range is None or target_range is None:
+        return False
+    if source in _FLOATS and target not in _FLOATS:
+        return False
+    return target_range[0] <= source_range[0] and source_range[1] <= target_range[1]
+
+
+def _check_appendable(
+    new: pl.Schema, existing: pl.Schema, keys: tuple[str, ...]
+) -> None:
+    """Check that data with the new schema can be appended to the existing schema.
+
+    The columns must be the same, in any order, and every column's type must be the
+    existing type or one that casts to it without losing values.
+
+    Args:
+        new: The schema of the data to append.
+        existing: The schema of the data already stored.
+        keys: Path components naming the profile, for the error message.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If the columns differ, or a column's type cannot be cast to the
+            existing type without losing values.
+    """
+    if set(new.names()) != set(existing.names()):
+        msg = (
+            f"Columns {sorted(new.names())} do not match existing columns "
+            f"{existing.names()} for {keys}"
+        )
+        raise ValueError(msg)
+    if mismatched := {
+        name: f"{new[name]} into {dtype}"
+        for name, dtype in existing.items()
+        if not _is_lossless_cast(new[name], dtype)
+    }:
+        msg = (
+            f"Column types do not match the existing types for {keys}: {mismatched}. "
+            "Cast them explicitly before appending."
+        )
+        raise ValueError(msg)
+
+
+def _check_key(key: str) -> None:
+    """Check that a key is a safe path, made of components that name no other file.
+
+    A key may hold several path components, like ``"sales/orders"``.
+
+    Args:
+        key: The key to check.
+
+    Returns:
+        None.
+
+    Raises:
+        ValueError: If a component of the key is empty, ``.`` or ``..``, would be
+            mistaken for a version directory or the manifest, or contains a character
+            that is not portable across file systems.
+    """
+    # re.split is typed as returning `str | Any`
+    for part in cast("list[str]", _KEY_SEPARATORS.split(key)):
+        if part in _INVALID_KEY_PARTS:
+            reason = "empty, '.' and '..' path components are not allowed"
+        elif (
+            _DATA_DIR_PATTERN.fullmatch(part) is not None or part == _MANIFEST_FILE_NAME
+        ):
+            reason = f"{part!r} is reserved for the files pyrosome stores"
+        elif not _NON_PORTABLE_CHARS.isdisjoint(part):
+            reason = "':' and NUL are not allowed"
+        else:
+            continue
+        msg = f"Invalid key {key!r}: {reason}"
+        raise ValueError(msg)
 
 
 def _tmp_path(directory: Path, suffix: str) -> Path:
@@ -152,28 +281,44 @@ def _data_files(data_dir: Path, extension: str) -> tuple[Path, ...]:
     return tuple(sorted(files, key=_data_file_index))
 
 
-def _claim_first_free[T](candidates: Iterable[T], claim: Callable[[T], None]) -> T:
-    """Claim the first candidate that is not already taken.
+def _try_claim(claim: Callable[[int], None], candidate: int) -> bool:
+    """Try to claim a candidate.
 
     Args:
-        candidates: Candidates to try, in order.
         claim: Atomically claims a candidate, raising FileExistsError if it is taken.
+        candidate: The candidate to claim.
 
     Returns:
-        The candidate that was claimed.
+        Whether the candidate was claimed, False if another process already did.
 
     Raises:
-        RuntimeError: If every candidate is already taken.
         Exception: Any error from claim other than FileExistsError.
     """
-    for candidate in candidates:
-        try:
-            claim(candidate)
-        except FileExistsError:
-            continue  # handles race conditions with other processes
-        return candidate
-    msg = "Every candidate is already taken"
-    raise RuntimeError(msg)
+    try:
+        claim(candidate)
+    except FileExistsError:
+        return False  # handles race conditions with other processes
+    return True
+
+
+def _claim_first_free(start: int, claim: Callable[[int], None]) -> int:
+    """Claim the first number from start that is not already taken.
+
+    Args:
+        start: The first number to try.
+        claim: Atomically claims a number, raising FileExistsError if it is taken.
+
+    Returns:
+        The number that was claimed.
+
+    Raises:
+        Exception: Any error from claim other than FileExistsError.
+    """
+    return next(idx for idx in itertools.count(start) if _try_claim(claim, idx))
+
+
+class ProfileNotFoundError(FileNotFoundError):
+    """There is no data for a profile, as opposed to data that cannot be found."""
 
 
 class Dal(Protocol):
@@ -291,14 +436,15 @@ class _FileDal(Dal):
             A lazy scan over every data file in the latest version.
 
         Raises:
-            FileNotFoundError: If there is no data for keys.
-            ValueError: If there are no keys or they lead outside the data directory.
-            TypeError: If the profile's manifest file is corrupt.
+            ProfileNotFoundError: If there is no data for keys.
+            FileNotFoundError: If the manifest names a missing version directory.
+            ValueError: If there are no keys, a key is invalid or leads outside the
+                data directory, or the profile's manifest file is corrupt.
             polars.exceptions.PolarsError: If the data files cannot be scanned.
         """
         if not (latest_data := self._get_latest_profile_data_paths(*keys)):
             msg = f"Cannot find files for {keys}"
-            raise FileNotFoundError(msg)
+            raise ProfileNotFoundError(msg)
         return self._scan(list(latest_data))
 
     @override
@@ -315,9 +461,9 @@ class _FileDal(Dal):
             The versioned directory the data was written to.
 
         Raises:
-            ValueError: If there are no keys, they lead outside the data directory, or
-                the profile's manifest names an invalid version.
-            TypeError: If the profile's manifest file is corrupt.
+            ValueError: If there are no keys, a key is invalid or leads outside the
+                data directory, or the profile's manifest file is corrupt or names an
+                invalid version.
             pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than
                 `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
@@ -344,8 +490,9 @@ class _FileDal(Dal):
     def append(self, data: pl.DataFrame | pl.LazyFrame, *keys: str) -> Path:
         """Add a new file to the latest data directory without touching existing files.
 
-        Columns are reordered and cast to match the existing data. If there is no
-        existing data this warns and writes instead.
+        Columns are reordered to match the existing data, and cast to its types when
+        that loses no values, such as ``Int32`` to ``Int64``. If there is no existing
+        data this warns and writes instead.
 
         Args:
             data: The data to append. Its columns must match the existing data.
@@ -356,32 +503,23 @@ class _FileDal(Dal):
             existing data.
 
         Raises:
-            ValueError: If the columns do not match the existing data, or for any
-                reason `write` raises it.
-            polars.exceptions.InvalidOperationError: If a column cannot be cast to
-                the existing type.
+            ValueError: If the columns or their types do not match the existing data
+                (a type must cast to the existing one without losing values), or for
+                any reason `write` raises it.
             FileNotFoundError: If the latest version directory is missing.
-            TypeError: If the profile's manifest file is corrupt.
             RuntimeError: If the latest data spans more than one directory.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the data directory cannot be written to.
         """
         if not (latest_data := self._get_latest_profile_data_paths(*keys)):
             msg = f"Appending to empty data for {keys}. Writing instead"
-            warnings.warn(msg, stacklevel=2)
+            warnings.warn(msg, stacklevel=2, skip_file_prefixes=(_PACKAGE_DIR,))
             return self.write(data, *keys)
 
         if isinstance(data, pl.DataFrame):
             data = data.lazy()
         existing_schema = self._scan(list(latest_data)).collect_schema()
-        if (new_names := set(data.collect_schema().names())) != set(
-            existing_schema.names()
-        ):
-            msg = (
-                f"Columns {sorted(new_names)} do not match existing columns "
-                f"{existing_schema.names()} for {keys}"
-            )
-            raise ValueError(msg)
+        _check_appendable(data.collect_schema(), existing_schema, keys)
         data = data.select(existing_schema.names()).cast(existing_schema)
 
         data_dir = latest_data[0].parent
@@ -420,7 +558,7 @@ class _FileDal(Dal):
         # append owns each index. Markers are kept so an index is never re-claimed:
         # a plain rename would silently replace a file published by another append
         idx = _claim_first_free(
-            itertools.count(next_idx),
+            next_idx,
             lambda idx: _claim_marker(data_dir, idx, self.extension).touch(
                 exist_ok=False
             ),
@@ -439,11 +577,14 @@ class _FileDal(Dal):
             The profile directory.
 
         Raises:
-            ValueError: If there are no keys or they lead outside the data directory.
+            ValueError: If there are no keys, a key is invalid, or the keys lead
+                outside the data directory.
         """
         if not keys:
             msg = "At least one key is required"
             raise ValueError(msg)
+        for key in keys:
+            _check_key(key)
         profile_dir = self.data_directory.joinpath(*keys)
         # check that the profile directory is within the data directory
         if not profile_dir.resolve().is_relative_to(self.data_directory.resolve()):
@@ -464,15 +605,14 @@ class _FileDal(Dal):
             The latest version directory, or None if nothing exists yet.
 
         Raises:
-            ValueError: If there are no keys or they lead outside the data directory.
-            FileNotFoundError: If the manifest names a missing version directory.
-            TypeError: If the profile's manifest file is corrupt.
+            ValueError: If there are no keys, a key is invalid, the keys lead outside
+                the data directory, or the profile's manifest file is corrupt.
         """
-        profile_dir = self.get_profile_dir(*keys)
-        manifest_file = DataManifestFile(profile_dir)
-        if not manifest_file.exists():
+        manifest_file = DataManifestFile(self.get_profile_dir(*keys))
+        try:
+            return manifest_file.get_latest_data_dir()
+        except FileNotFoundError:
             return None
-        return manifest_file.get_latest_data_dir()
 
     def _get_latest_profile_data_paths(self, *keys: str) -> tuple[Path, ...]:
         """Get a concrete list of the paths with the latest data.
@@ -484,9 +624,10 @@ class _FileDal(Dal):
             The latest data files, empty if nothing exists yet.
 
         Raises:
-            ValueError: If there are no keys or they lead outside the data directory.
+            ValueError: If there are no keys, a key is invalid, the keys lead outside
+                the data directory, or the profile's manifest file is corrupt.
             FileNotFoundError: If the manifest names a missing version directory.
-            TypeError: If the profile's manifest file is corrupt.
+            OSError: If the version directory cannot be listed.
         """
         if (latest_dir := self._get_latest_profile_version(*keys)) is None:
             return ()
@@ -609,7 +750,7 @@ class DataManifestFile:
     profile_path: Path
     """Path to the profile directory."""
 
-    MANIFEST_FILE_NAME: Final[str] = "manifest.json"
+    MANIFEST_FILE_NAME: Final[str] = _MANIFEST_FILE_NAME
     """Name of the manifest file inside the profile directory."""
 
     LOCK_TIMEOUT: Final[float] = 10.0
@@ -642,15 +783,11 @@ class DataManifestFile:
             The latest data directory.
 
         Raises:
-            FileNotFoundError: If the manifest file or the latest data directory does
-                not exist.
-            TypeError: If the manifest file is corrupt.
+            FileNotFoundError: If the manifest file does not exist. The directory it
+                names is not checked, so listing it raises if it is missing.
+            ValueError: If the manifest file is corrupt.
         """
-        latest_data_dir = self.profile_path / self._read_latest_data_dir_name()
-        if not latest_data_dir.exists():
-            msg = f"Latest data directory {latest_data_dir} does not exist."
-            raise FileNotFoundError(msg)
-        return latest_data_dir
+        return self.profile_path / self._read_latest_data_dir_name()
 
     def reserve_new_data_dir(self) -> Path:
         """Create and return the next version of the data directory.
@@ -669,11 +806,12 @@ class DataManifestFile:
             if path.is_dir() and (match := _DATA_DIR_PATTERN.fullmatch(path.name))
         ]
         next_dir_idx = max(existing, default=-1) + 1
-        return _claim_first_free(
-            (self.profile_path / f"v{idx}" for idx in itertools.count(next_dir_idx)),
+        idx = _claim_first_free(
+            next_dir_idx,
             # mkdir is atomic, so concurrent writers never share a directory
-            lambda path: path.mkdir(exist_ok=False),
+            lambda idx: (self.profile_path / f"v{idx}").mkdir(exist_ok=False),
         )
+        return self.profile_path / f"v{idx}"
 
     def commit_data_dir(self, data_dir: Path) -> None:
         """Point the manifest at data_dir, unless it already points at a newer version.
@@ -686,8 +824,7 @@ class DataManifestFile:
 
         Raises:
             ValueError: If data_dir or the version in the manifest has an invalid
-                name.
-            TypeError: If the manifest file is corrupt.
+                name, or the manifest file is corrupt.
             pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than `LOCK_TIMEOUT`.
             pyrosome.simple_file_lock.FileLockPermissionError: If the manifest cannot
@@ -696,10 +833,15 @@ class DataManifestFile:
         """
         new_idx = self._data_dir_index(data_dir.name)
         with self._lock():
-            if self.exists():
-                current_idx = self._data_dir_index(self._read_latest_data_dir_name())
-                if current_idx >= new_idx:
-                    return
+            try:
+                current_name = self._read_latest_data_dir_name()
+            except FileNotFoundError:
+                current_name = None
+            if (
+                current_name is not None
+                and self._data_dir_index(current_name) >= new_idx
+            ):
+                return
             self._write(data_dir.name)
 
     def _data_dir_index(self, name: str) -> int:
@@ -727,22 +869,21 @@ class DataManifestFile:
 
         Raises:
             FileNotFoundError: If the manifest file does not exist.
-            TypeError: If the manifest file has no valid latest data directory.
-            json.JSONDecodeError: If the manifest file is not valid JSON.
+            ValueError: If the manifest file has no valid latest data directory, or is
+                not valid JSON (`json.JSONDecodeError`).
         """
-        if not self.manifest_path.exists():
-            msg = f"Manifest file {self.manifest_path} does not exist."
-            raise FileNotFoundError(msg)
         # writes replace the file atomically, so no lock is needed to read it
         match cast("object", json.loads(self.manifest_path.read_text())):
-            case {"latest_data_dir": str() as name}:
+            case {"latest_data_dir": str() as name} if _DATA_DIR_PATTERN.fullmatch(
+                name
+            ):
                 return name
             case _:
                 msg = (
                     f"Manifest file {self.manifest_path} is corrupt: "
                     "missing or invalid 'latest_data_dir'."
                 )
-                raise TypeError(msg)
+                raise ValueError(msg)
 
     def _write(self, latest_data_dir: str) -> None:
         """Atomically replace the manifest file. The caller must hold the lock.

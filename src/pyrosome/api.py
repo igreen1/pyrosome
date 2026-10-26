@@ -149,20 +149,19 @@ class SimpleIo:
             doesn't exist.
 
         Raises:
-            ValueError: If keys lead outside the data directory.
+            ValueError: If a key is invalid or the keys lead outside the data
+                directory.
             OSError: If the directory cannot be listed.
         """
         directory = (
             self.dal.data_directory if not keys else self.dal.get_profile_dir(*keys)
         )
-        if not directory.is_dir():
+        try:
+            children = tuple(directory.iterdir())
+        except FileNotFoundError, NotADirectoryError:
             return ()
         return tuple(
-            sorted(
-                child.name
-                for child in directory.iterdir()
-                if DataManifestFile(child).exists()
-            )
+            sorted(child.name for child in children if DataManifestFile(child).exists())
         )
 
     def read(self, /, *keys: str, **filters: FilterValue) -> pl.LazyFrame:
@@ -183,10 +182,10 @@ class SimpleIo:
         Raises:
             polars.exceptions.ColumnNotFoundError: If a filter names a column the
                 data doesn't have.
-            TypeError: If a filter value is a float or another unsupported type, or
-                the profile's manifest file is corrupt.
+            TypeError: If a filter value is a float or another unsupported type.
             FileNotFoundError: If there is no data for keys.
-            ValueError: If there are no keys or they lead outside the data directory.
+            ValueError: If there are no keys, a key is invalid or leads outside the
+                data directory, or the profile's manifest file is corrupt.
             polars.exceptions.PolarsError: If the data files cannot be scanned.
         """
         data = self.dal.read(*keys)
@@ -216,9 +215,9 @@ class SimpleIo:
         Raises:
             ImportError: If data is a pandas frame needing pyarrow to convert, and
                 pyarrow is not installed.
-            ValueError: If there are no keys, they lead outside the data directory, or
-                the profile's manifest names an invalid version.
-            TypeError: If the profile's manifest file is corrupt.
+            ValueError: If there are no keys, a key is invalid or leads outside the
+                data directory, or the profile's manifest file is corrupt or names an
+                invalid version.
             pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than
                 `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
@@ -249,12 +248,10 @@ class SimpleIo:
         Raises:
             ImportError: If data is a pandas frame needing pyarrow to convert, and
                 pyarrow is not installed.
-            ValueError: If the columns do not match the existing data, or for any
-                reason `write` raises it.
-            polars.exceptions.InvalidOperationError: If a column cannot be cast to
-                the existing type.
+            ValueError: If the columns or their types do not match the existing data
+                (a type must cast to the existing one without losing values), or for
+                any reason `write` raises it.
             FileNotFoundError: If the latest version directory is missing.
-            TypeError: If the profile's manifest file is corrupt.
             RuntimeError: If the latest data spans more than one directory.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the data directory cannot be written to.

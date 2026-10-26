@@ -57,7 +57,9 @@ Append data
 -----------
 
 `~pyrosome.ParquetDal.append` adds a new file to the latest version. Columns may be
-in any order and are cast to the stored types.
+in any order. They are cast to the stored types when that loses no values, such as
+``Int32`` to ``Int64``; otherwise `ValueError` is raised, so floats never silently
+become integers.
 
 .. doctest::
 

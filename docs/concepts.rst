@@ -63,8 +63,9 @@ Keys
 
 Keys are path components, so ``dal.write(df, "sales", "orders")`` and
 ``dal.write(df, "sales/orders")`` name the same profile. At least one key is
-required, and keys that resolve outside the data directory, such as ``".."``,
-raise `ValueError`.
+required. Keys that are empty, ``"."`` or ``".."``, contain ``":"`` or NUL, or name
+a version (``"v0"``) or ``"manifest.json"`` would collide with the files pyrosome
+stores or leave the data directory, so they raise `ValueError`.
 
 .. doctest::
 
@@ -77,7 +78,7 @@ raise `ValueError`.
    >>> dal.read("..")  # doctest: +IGNORE_EXCEPTION_DETAIL
    Traceback (most recent call last):
    ...
-   ValueError: Profile directory data/.. is not within data directory data
+   ValueError: Invalid key '..': empty, '.' and '..' path components are not allowed
 
 A profile is only the directory that holds a manifest. ``dal.read("sales")`` does
 not combine the profiles below ``sales/``; see :ref:`recipe-combine-profiles`.
@@ -87,7 +88,7 @@ not combine the profiles below ``sales/``; see :ref:`recipe-combine-profiles`.
    >>> dal.read("sales")
    Traceback (most recent call last):
    ...
-   FileNotFoundError: Cannot find files for ('sales',)
+   pyrosome.dal.ProfileNotFoundError: Cannot find files for ('sales',)
 
 Versions
 --------
@@ -97,7 +98,9 @@ audits simple, but the data directory grows with every write until old versions
 are removed. See :ref:`recipe-prune`.
 
 Each version can have its own schema. Within a version, every appended file must
-have the same column names as the existing data.
+have the same column names as the existing data, and column types that cast to the
+existing types without losing values (an integer to a wider integer, say). A float
+appended to an integer column raises `ValueError` instead of being truncated.
 
 .. doctest::
 
@@ -153,7 +156,7 @@ Limitations
      >>> dal.read("sales", "orders")
      Traceback (most recent call last):
      ...
-     FileNotFoundError: Cannot find files for ('sales', 'orders')
+     pyrosome.dal.ProfileNotFoundError: Cannot find files for ('sales', 'orders')
 
 * **CSV types are inferred.** `~pyrosome.CsvDal` stores no schema, so types
   such as dates or small integers come back as strings or ``Int64``.

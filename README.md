@@ -17,7 +17,7 @@ pyrosome handles this with a small, predictable layout on the filesystem. There 
 ## Project summary
 
 - **Versioned**: every `write` creates a new version (`v0`, `v1`, …). Older versions stay on disk until you remove them, so rollbacks and audits are simple.
-- **Append-only**: `append` adds a new file to the latest version and never rewrites existing files. Columns are reordered and cast to match the stored data.
+- **Append-only**: `append` adds a new file to the latest version and never rewrites existing files. Columns are reordered to match the stored data, and cast to its types only when no values are lost (an `Int32` into an `Int64` column); anything else raises `ValueError`.
 - **Safe with several processes**: versions are claimed with an atomic `mkdir`, appends claim their index by exclusively creating a marker file so they never overwrite each other, and the manifest naming the latest version is replaced in one step.
 - **Lazy**: `read` returns a `polars.LazyFrame`, so filters and column selections are pushed down into the file scan.
 - **Parquet or CSV**: `ParquetDal` stores parquet; `CsvDal` has the same API and stores CSV for people and tools that need to open the files directly.
@@ -140,7 +140,7 @@ To store CSV instead, use `CsvDal` with the same methods. Keep each format in it
 >>> dal.read("sales", "returns")
 Traceback (most recent call last):
 ...
-FileNotFoundError: Cannot find files for ('sales', 'returns')
+pyrosome.dal.ProfileNotFoundError: Cannot find files for ('sales', 'returns')
 
 ```
 

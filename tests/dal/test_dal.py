@@ -2,6 +2,7 @@
 
 import json
 import stat
+import threading
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -9,7 +10,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from pyrosome.dal import ParquetDal, DataManifestFile
+from pyrosome.dal import DataManifestFile, ParquetDal, ProfileNotFoundError
 from pyrosome.simple_file_lock import FileAlreadyLockedError, SimpleWriteLock
 
 WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
@@ -122,8 +123,27 @@ class TestRead:
     def test_corrupt_manifest(self, dal, df):
         dal.write(df, *KEYS)
         (dal.data_directory.joinpath(*KEYS) / "manifest.json").write_text("{}")
-        with pytest.raises(TypeError, match="corrupt"):
+        with pytest.raises(ValueError, match="corrupt"):
             dal.read(*KEYS)
+
+    @pytest.mark.parametrize("contents", ["{", '{"latest_data_dir": "../other/v0"}'])
+    def test_unusable_manifest(self, dal, df, contents):
+        dal.write(df, *KEYS)
+        (dal.data_directory.joinpath(*KEYS) / "manifest.json").write_text(contents)
+        with pytest.raises(ValueError):
+            dal.read(*KEYS)
+
+    def test_missing_profile_is_profile_not_found(self, dal):
+        with pytest.raises(ProfileNotFoundError):
+            dal.read(*KEYS)
+
+    def test_missing_version_dir_is_not_profile_not_found(self, dal, df):
+        output_dir = dal.write(df, *KEYS)
+        delete_data_file(output_dir / "0.parquet")
+        output_dir.rmdir()
+        with pytest.raises(FileNotFoundError) as error:
+            dal.read(*KEYS)
+        assert not isinstance(error.value, ProfileNotFoundError)
 
 
 class TestAppend:
@@ -145,6 +165,11 @@ class TestAppend:
         assert output_dir.name == "v0"
         assert_frame_equal(dal.read(*KEYS).collect(), df)
 
+    def test_append_warning_points_at_caller(self, dal, df):
+        with pytest.warns(UserWarning, match="Writing instead") as record:
+            dal.append(df, *KEYS)
+        assert record[0].filename == __file__
+
     def test_append_reorders_and_casts_columns(self, dal, df):
         dal.write(df, *KEYS)
         other = pl.DataFrame({"b": ["z"], "a": pl.Series([3], dtype=pl.Int32)})
@@ -152,6 +177,51 @@ class TestAppend:
         result = dal.read(*KEYS).collect()
         assert result.schema == df.schema
         assert result["a"].to_list() == [1, 2, 3]
+
+    @pytest.mark.parametrize(
+        ("existing", "new"),
+        [
+            (pl.Int64, pl.Float64),  # would truncate
+            (pl.Int8, pl.Int64),  # could overflow
+            (pl.Int64, pl.UInt64),
+            (pl.UInt8, pl.Int8),
+            (pl.Float32, pl.Float64),  # would round
+            (pl.Float64, pl.Int64),  # beyond 2**53
+            (pl.String, pl.Int64),
+            (pl.Int64, pl.String),
+            (pl.Datetime("us"), pl.Datetime("ms")),
+        ],
+    )
+    def test_append_rejects_lossy_types(self, dal, existing, new):
+        output_dir = dal.write(pl.DataFrame({"a": pl.Series([], dtype=existing)}), *KEYS)
+        with pytest.raises(ValueError, match="types do not match"):
+            dal.append(pl.DataFrame({"a": pl.Series([], dtype=new)}), *KEYS)
+        assert visible_files(output_dir) == ["0.parquet"]
+
+    @pytest.mark.parametrize(
+        ("existing", "new"),
+        [
+            (pl.Int64, pl.Int8),
+            (pl.Int64, pl.UInt32),
+            (pl.UInt64, pl.UInt8),
+            (pl.Float64, pl.Float32),
+            (pl.Float64, pl.Int32),
+            (pl.Float32, pl.Int16),
+            (pl.String, pl.Null),
+            (pl.Datetime("us"), pl.Datetime("us")),
+        ],
+    )
+    def test_append_allows_lossless_types(self, dal, existing, new):
+        dal.write(pl.DataFrame({"a": pl.Series([], dtype=existing)}), *KEYS)
+        dal.append(pl.DataFrame({"a": pl.Series([], dtype=new)}), *KEYS)
+        assert dal.read(*KEYS).collect_schema()["a"] == existing
+
+    def test_append_float_to_int_column_is_rejected_not_truncated(self, dal, df):
+        output_dir = dal.write(df, *KEYS)
+        with pytest.raises(ValueError, match="a': 'Float64 into Int64"):
+            dal.append(pl.DataFrame({"a": [1.5], "b": ["z"]}), *KEYS)
+        assert_frame_equal(dal.read(*KEYS).collect(), df)
+        assert visible_files(output_dir) == ["0.parquet"]
 
     @pytest.mark.parametrize(
         "columns",
@@ -223,10 +293,52 @@ class TestKeys:
         with pytest.raises(ValueError, match="At least one key"):
             dal.write(df)
 
-    @pytest.mark.parametrize("keys", [("..",), ("a", "..", ".."), ("/etc",)])
+    @pytest.mark.parametrize(
+        "keys",
+        [
+            ("..",),
+            ("a", "..", ".."),
+            ("/etc",),
+            ("a/../..",),
+            ("a\\..\\..",),
+            ("C:",),
+            ("C:\\evil",),
+        ],
+    )
     def test_escaping_data_directory(self, dal, df, keys):
-        with pytest.raises(ValueError, match="not within data directory"):
+        with pytest.raises(ValueError, match="Invalid key"):
             dal.write(df, *keys)
+
+    @pytest.mark.parametrize(
+        "keys",
+        [
+            ("",),
+            (".",),
+            ("a", ""),
+            ("a/",),
+            ("a//b",),
+            ("a/./b",),
+            ("v0",),
+            ("a/v12",),
+            ("manifest.json",),
+            ("a\0b",),
+            ("2024-01-01T10:00",),
+        ],
+    )
+    def test_invalid_keys(self, dal, df, keys):
+        with pytest.raises(ValueError, match="Invalid key"):
+            dal.write(df, *keys)
+        assert not list(dal.data_directory.iterdir())
+
+    def test_invalid_keys_are_rejected_on_read_and_append(self, dal, df):
+        for method in (dal.read, lambda *keys: dal.append(df, *keys)):
+            with pytest.raises(ValueError, match="Invalid key"):
+                method("")
+
+    @pytest.mark.parametrize("keys", [("a/b",), ("a\\b",), ("v", "vv", "v1a", "version")])
+    def test_valid_keys(self, dal, df, keys):
+        dal.write(df, *keys)
+        assert_frame_equal(dal.read(*keys).collect(), df)
 
 
 class TestManifest:
@@ -260,6 +372,34 @@ class TestManifest:
         manifest = DataManifestFile(tmp_path)
         manifest.commit_data_dir(manifest.reserve_new_data_dir())
         assert visible_files(tmp_path) == ["manifest.json", "v0"]
+
+
+    def test_commit_while_reading(self, tmp_path):
+        """Readers must not make a commit fail, which Windows can do by locking files."""
+        manifest = DataManifestFile(tmp_path)
+        manifest.commit_data_dir(manifest.reserve_new_data_dir())
+        done = threading.Event()
+        errors: list[BaseException] = []
+
+        def read_forever():
+            try:
+                while not done.is_set():
+                    manifest.get_latest_data_dir()
+            except BaseException as error:  # noqa: BLE001
+                errors.append(error)
+
+        readers = [threading.Thread(target=read_forever) for _ in range(4)]
+        for reader in readers:
+            reader.start()
+        try:
+            for _ in range(300):
+                manifest.commit_data_dir(manifest.reserve_new_data_dir())
+        finally:
+            done.set()
+            for reader in readers:
+                reader.join()
+        assert errors == []
+        assert manifest.get_latest_data_dir() == tmp_path / "v300"
 
 
 def _write(data_directory, keys):

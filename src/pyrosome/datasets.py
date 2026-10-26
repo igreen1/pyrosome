@@ -3,6 +3,8 @@
 import contextlib
 from typing import TYPE_CHECKING, Self, cast
 
+from pyrosome.dal import ProfileNotFoundError
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
@@ -58,17 +60,17 @@ class Dataset:
     filters: Mapping[str, FilterValue]
     """Row-wise filters to apply when loading the data."""
 
-    _dal: SimpleIo
-    """Accessor to grab the data."""
+    _store: SimpleIo
+    """The storage the dataset's profiles are read from and written to."""
 
-    def __init__(self, dal: SimpleIo, *keys: str, **filters: FilterValue) -> None:
+    def __init__(self, store: SimpleIo, *keys: str, **filters: FilterValue) -> None:
         """Set up the dataset. Nothing is read until a profile is requested.
 
         Subclasses should keep this signature: `get_subset` and `without_filters`
         call it to make datasets of the same class.
 
         Args:
-            dal: The storage the dataset's profiles are read from.
+            store: The storage the dataset's profiles are read from.
             *keys: Path components naming the dataset's directory.
             **filters: Column names and the value each column must equal in every
                 profile read through this dataset. None matches nulls.
@@ -76,8 +78,8 @@ class Dataset:
         Returns:
             None.
         """
-        self._dal = dal
-        self.keys = tuple(keys)
+        self._store = store
+        self.keys = keys
         self.filters = filters
 
     def get_profile(self, *keys: str) -> pl.LazyFrame:
@@ -93,14 +95,14 @@ class Dataset:
         Raises:
             polars.exceptions.ColumnNotFoundError: If a filter names a column the
                 profile doesn't have.
-            TypeError: If a filter value is a float or another unsupported type, or
-                the profile's manifest file is corrupt.
+            TypeError: If a filter value is a float or another unsupported type.
             FileNotFoundError: If the profile has no data.
-            ValueError: If there are no keys at all, or they lead outside the data
-                directory.
+            ValueError: If there are no keys at all, a key is invalid or leads
+                outside the data directory, or the profile's manifest file is
+                corrupt.
             polars.exceptions.PolarsError: If the data files cannot be scanned.
         """
-        return self._dal.read(*(*self.keys, *keys), **self.filters)
+        return self._store.read(*(*self.keys, *keys), **self.filters)
 
     def get_cache_profile(self, *keys: str, refresh: bool = False) -> pl.LazyFrame:
         """Get a profile, or calculate and cache it if not found.
@@ -123,11 +125,10 @@ class Dataset:
                 ``_calc_<profile>`` method.
             polars.exceptions.ColumnNotFoundError: If a filter names a column the
                 profile doesn't have.
-            TypeError: If a filter value is a float or another unsupported type, or
-                the profile's manifest file is corrupt.
+            TypeError: If a filter value is a float or another unsupported type.
             FileNotFoundError: If a profile the calculation reads has no data.
-            ValueError: If there are no keys at all, or they lead outside the data
-                directory.
+            ValueError: If there are no keys at all, a key is invalid or leads
+                outside the data directory, or a profile's manifest file is corrupt.
             ImportError: If the calculation returns a pandas frame needing pyarrow
                 to convert, and pyarrow is not installed.
             pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
@@ -141,7 +142,7 @@ class Dataset:
             Exception: Anything the ``_calc_<profile>`` method raises.
         """
         if not refresh:
-            with contextlib.suppress(FileNotFoundError):
+            with contextlib.suppress(ProfileNotFoundError):
                 return self.get_profile(*keys)
         self._calculate_profile(*keys)
         return self.get_profile(*keys)
@@ -158,9 +159,9 @@ class Dataset:
         Raises:
             AttributeError: If there is no ``_calc_<profile>`` method for keys.
             FileNotFoundError: If a profile the calculation reads has no data.
-            ValueError: If there are no keys at all, they lead outside the data
-                directory, or the profile's manifest names an invalid version.
-            TypeError: If the profile's manifest file is corrupt.
+            ValueError: If there are no keys at all, a key is invalid or leads
+                outside the data directory, or the profile's manifest file is corrupt
+                or names an invalid version.
             ImportError: If the calculation returns a pandas frame needing pyarrow
                 to convert, and pyarrow is not installed.
             pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
@@ -174,7 +175,7 @@ class Dataset:
         """
         calc_fn = self._get_calc_function(*keys)
         # calculate from every row, not just this dataset's subset
-        self._dal.write(calc_fn(self.without_filters()), *self.keys, *keys)
+        self._store.write(calc_fn(self.without_filters()), *self.keys, *keys)
 
     def without_filters(self) -> Self:
         """Get this dataset without any filters.
@@ -182,7 +183,7 @@ class Dataset:
         Returns:
             A dataset of the same class, with the same keys and no filters.
         """
-        return type(self)(self._dal, *self.keys)
+        return type(self)(self._store, *self.keys)
 
     def get_subset(self, **new_filters: FilterValue) -> Self:
         """Apply additional filters to further reduce this dataset.
@@ -201,7 +202,7 @@ class Dataset:
         if already_filtered := sorted(self.filters.keys() & new_filters.keys()):
             msg = f"Dataset is already filtered by {', '.join(already_filtered)}"
             raise ValueError(msg)
-        return type(self)(self._dal, *self.keys, **self.filters, **new_filters)
+        return type(self)(self._store, *self.keys, **self.filters, **new_filters)
 
     def _get_calc_function(self, *keys: str) -> Callable[[Self], Frame]:
         """Find the method that calculates the profile defined by keys.
@@ -216,9 +217,9 @@ class Dataset:
         Raises:
             AttributeError: If the dataset has no such method.
         """
-        profile_name = keys
-        fn_name = f"_calc_{'_'.join(profile_name)}"
-        if hasattr(type(self), fn_name):
+        fn_name = f"_calc_{'_'.join(keys)}"
+        try:
             return cast("Callable[[Self], Frame]", getattr(type(self), fn_name))
-        msg = f"{type(self).__name__} has no {fn_name} method to calculate {keys}"
-        raise AttributeError(msg)
+        except AttributeError as error:
+            msg = f"{type(self).__name__} has no {fn_name} method to calculate {keys}"
+            raise AttributeError(msg) from error

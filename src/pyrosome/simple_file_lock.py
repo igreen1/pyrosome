@@ -29,10 +29,6 @@ class FileLockPermissionError(LockError):
     """An error that occurs when a file cannot be locked due to permission issues."""
 
 
-class FileLockedError(LockError):
-    """An error that occurs when a file is locked and cannot be accessed."""
-
-
 class SimpleWriteLock:
     """Simple lock that prevents other processes accessing a file being written to.
 
@@ -84,7 +80,10 @@ class SimpleWriteLock:
             LockError: If this lock is already held.
             FileAlreadyLockedError: If another process still holds the lock after the
                 timeout.
-            FileLockPermissionError: If the lock file cannot be created.
+            FileLockPermissionError: If the lock file cannot be created because
+                permission is denied.
+            OSError: If the lock file cannot be created for any other reason, such
+                as a missing directory.
         """
         if self.locked:
             msg = f"File {self.path} is already locked."
@@ -129,13 +128,16 @@ class SimpleWriteLock:
             Whether the lock was taken.
 
         Raises:
-            FileLockPermissionError: If the lock file cannot be created.
+            FileLockPermissionError: If the lock file cannot be created because
+                permission is denied.
+            OSError: If the lock file cannot be created for any other reason, such
+                as a missing directory.
         """
         try:
             self.lock_path.touch(exist_ok=False)
         except FileExistsError:
             return False
-        except OSError as e:
+        except PermissionError as e:
             raise FileLockPermissionError(self.path) from e
         self.locked = True
         return True
