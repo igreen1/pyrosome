@@ -4,7 +4,7 @@ import datetime as dt
 import itertools
 from typing import TYPE_CHECKING, cast
 
-lazy import polars as pl
+import polars as pl
 
 from pyrosome.dal import DataManifestFile, get_accessor
 

@@ -44,7 +44,7 @@ SMB shares are supported as a lower priority. pyrosome aims to work on them, but
 
 ## Install
 
-pyrosome requires Python 3.15 or newer. It is not published to PyPI, so install it from a local checkout.
+pyrosome requires Python 3.14 or newer. It is not published to PyPI, so install it from a local checkout.
 
 Add it to another uv project:
 

@@ -4,7 +4,7 @@ Quickstart
 Install
 -------
 
-pyrosome needs Python 3.15 or newer and polars. It is not published to PyPI, so
+pyrosome needs Python 3.14 or newer and polars. It is not published to PyPI, so
 install it from a local checkout:
 
 .. code-block:: console
