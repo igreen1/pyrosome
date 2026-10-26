@@ -7,8 +7,8 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from salp import SimpleIo
-from salp.dal import ParquetDal
+from salpa import SimpleIo
+from salpa.dal import ParquetDal
 
 KEYS = ("profile", "sub")
 

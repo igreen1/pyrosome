@@ -1,13 +1,13 @@
-"""Sphinx configuration for the salp documentation."""
+"""Sphinx configuration for the salpa documentation."""
 
 # Sphinx reads these exact lowercase names and its own config shapes
 # pylint: disable=invalid-name,consider-using-namedtuple-or-dataclass
 
 from importlib.metadata import version as package_version
 
-project = "salp"
+project = "salpa"
 author = "ian"
-release = package_version("salp")
+release = package_version("salpa")
 
 extensions = [
     "sphinx.ext.autodoc",
@@ -39,4 +39,4 @@ intersphinx_mapping = {
 doctest_global_setup = "import os, tempfile; os.chdir(tempfile.mkdtemp())"
 
 html_theme = "furo"
-html_title = f"salp {release}"
+html_title = f"salpa {release}"

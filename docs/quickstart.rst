@@ -4,24 +4,24 @@ Quickstart
 Install
 -------
 
-salp needs Python 3.15 or newer and polars. It is not published to PyPI, so
+salpa needs Python 3.15 or newer and polars. It is not published to PyPI, so
 install it from a local checkout:
 
 .. code-block:: console
 
-   $ uv add /path/to/salp
+   $ uv add /path/to/salpa
 
 Create a data access layer
 --------------------------
 
-A `~salp.ParquetDal` is a handle on a directory. Creating one does not touch the
+A `~salpa.ParquetDal` is a handle on a directory. Creating one does not touch the
 disk; directories are created on the first write.
 
 .. doctest::
 
    >>> from pathlib import Path
    >>> import polars as pl
-   >>> from salp import ParquetDal
+   >>> from salpa import ParquetDal
    >>> dal = ParquetDal(Path("data"))
 
 Write data
@@ -38,13 +38,13 @@ directory level, so ``"sales", "eu"`` is stored in ``sales/eu/``.
    >>> dal.write(orders, "sales", "orders").name
    'v0'
 
-`~salp.ParquetDal.write` accepts a `polars.DataFrame` or a `polars.LazyFrame`
+`~salpa.ParquetDal.write` accepts a `polars.DataFrame` or a `polars.LazyFrame`
 and returns the new version directory.
 
 Read data
 ---------
 
-`~salp.ParquetDal.read` returns a `polars.LazyFrame` over the latest version.
+`~salpa.ParquetDal.read` returns a `polars.LazyFrame` over the latest version.
 Nothing is loaded until you call ``collect``.
 
 .. doctest::
@@ -56,7 +56,7 @@ Nothing is loaded until you call ``collect``.
 Append data
 -----------
 
-`~salp.ParquetDal.append` adds a new file to the latest version. Columns may be
+`~salpa.ParquetDal.append` adds a new file to the latest version. Columns may be
 in any order and are cast to the stored types.
 
 .. doctest::
@@ -70,7 +70,7 @@ in any order and are cast to the stored types.
 Write a new version
 -------------------
 
-Writing again replaces what `~salp.ParquetDal.read` returns. The schema of a new
+Writing again replaces what `~salpa.ParquetDal.read` returns. The schema of a new
 version does not have to match the old one.
 
 .. doctest::
@@ -83,12 +83,12 @@ version does not have to match the old one.
 Use CSV instead of parquet
 --------------------------
 
-`~salp.CsvDal` has the same API but stores CSV files. Use it when people
+`~salpa.CsvDal` has the same API but stores CSV files. Use it when people
 or other tools need to open the files directly; prefer parquet otherwise.
 
 .. doctest::
 
-   >>> from salp import CsvDal
+   >>> from salpa import CsvDal
    >>> csv_dal = CsvDal(Path("exports"))
    >>> csv_dal.write(orders, "sales", "orders").as_posix()
    'exports/sales/orders/v0'
