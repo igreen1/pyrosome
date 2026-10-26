@@ -6,7 +6,7 @@ readme = "README.md"
 authors = [
     { name = "ian", email = "dev@iangreen.dev" }
 ]
-requires-python = ">=3.15"
+requires-python = ">=3.14"
 dependencies = [
     "polars>=2.0.0",
 ]
@@ -38,7 +38,7 @@ docs = [
 ]
 
 [tool.ruff]
-target-version = "py315"
+target-version = "py314"
 preview = true
 
 [tool.ruff.lint]
@@ -78,7 +78,7 @@ all = "error"
 error-on-warning = true
 
 [tool.mypy]
-python_version = "3.15"
+python_version = "3.14"
 strict = true
 warn_unreachable = true
 local_partial_types = true
@@ -104,7 +104,7 @@ enable_error_code = [
 ]
 
 [tool.pylint.main]
-py-version = "3.15"
+py-version = "3.14"
 fail-on = ["all"]
 load-plugins = [
     "pylint.extensions.bad_builtin",

@@ -12,7 +12,7 @@ from abc import abstractmethod
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, overload, override
 
-lazy import polars as pl
+import polars as pl
 
 from pyrosome.simple_file_lock import SimpleWriteLock
 
