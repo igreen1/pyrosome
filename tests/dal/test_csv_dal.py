@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from salpa.dal import ParquetDal, CsvDal
+from pyrosome.dal import ParquetDal, CsvDal
 
 KEYS = ("profile", "sub")
 

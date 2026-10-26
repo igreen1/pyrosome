@@ -665,7 +665,7 @@ wheels = [
 ]
 
 [[package]]
-name = "salpa"
+name = "pyrosome"
 version = "0.1.7"
 source = { editable = "." }
 dependencies = [

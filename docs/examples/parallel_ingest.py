@@ -5,7 +5,7 @@ from pathlib import Path
 
 import polars as pl
 
-from salpa import ParquetDal
+from pyrosome import ParquetDal
 
 DATA_DIR = Path("data")
 

@@ -1,42 +1,42 @@
 API reference
 =============
 
-Everything most code needs is importable from ``salpa`` itself, e.g.
-``from salpa import ParquetDal``.
+Everything most code needs is importable from ``pyrosome`` itself, e.g.
+``from pyrosome import ParquetDal``.
 
 Data access
 -----------
 
-.. autoclass:: salpa.Dal
+.. autoclass:: pyrosome.Dal
 
-.. autoclass:: salpa.ParquetDal
+.. autoclass:: pyrosome.ParquetDal
    :inherited-members:
 
-.. autoclass:: salpa.CsvDal
+.. autoclass:: pyrosome.CsvDal
    :inherited-members:
 
-.. autofunction:: salpa.get_accessor
+.. autofunction:: pyrosome.get_accessor
 
 Filtering reads
 ---------------
 
-.. autoclass:: salpa.SimpleIo
+.. autoclass:: pyrosome.SimpleIo
 
-.. autodata:: salpa.api.FilterValue
+.. autodata:: pyrosome.api.FilterValue
 
 Datasets
 --------
 
-.. autoclass:: salpa.Dataset
+.. autoclass:: pyrosome.Dataset
 
 Internals
 ---------
 
 These live in submodules and are rarely needed directly.
 
-.. automodule:: salpa.dal
+.. automodule:: pyrosome.dal
    :no-members:
 
-.. autoclass:: salpa.dal.DataManifestFile
+.. autoclass:: pyrosome.dal.DataManifestFile
 
-.. automodule:: salpa.simple_file_lock
+.. automodule:: pyrosome.simple_file_lock
