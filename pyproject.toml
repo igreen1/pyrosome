@@ -1,6 +1,6 @@
 [project]
 name = "pyrosome"
-version = "0.1.9"
+version = "0.1.10"
 description = "Versioned, append-only storage for polars data frames, safe for concurrent processes"
 license = "MIT"
 license-files = ["LICENSE"]
