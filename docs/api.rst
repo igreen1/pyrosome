@@ -1,42 +1,42 @@
 API reference
 =============
 
-Everything most code needs is importable from ``salp`` itself, e.g.
-``from salp import ParquetDal``.
+Everything most code needs is importable from ``salpa`` itself, e.g.
+``from salpa import ParquetDal``.
 
 Data access
 -----------
 
-.. autoclass:: salp.Dal
+.. autoclass:: salpa.Dal
 
-.. autoclass:: salp.ParquetDal
+.. autoclass:: salpa.ParquetDal
    :inherited-members:
 
-.. autoclass:: salp.CsvDal
+.. autoclass:: salpa.CsvDal
    :inherited-members:
 
-.. autofunction:: salp.get_accessor
+.. autofunction:: salpa.get_accessor
 
 Filtering reads
 ---------------
 
-.. autoclass:: salp.SimpleIo
+.. autoclass:: salpa.SimpleIo
 
-.. autodata:: salp.api.FilterValue
+.. autodata:: salpa.api.FilterValue
 
 Datasets
 --------
 
-.. autoclass:: salp.Dataset
+.. autoclass:: salpa.Dataset
 
 Internals
 ---------
 
 These live in submodules and are rarely needed directly.
 
-.. automodule:: salp.dal
+.. automodule:: salpa.dal
    :no-members:
 
-.. autoclass:: salp.dal.DataManifestFile
+.. autoclass:: salpa.dal.DataManifestFile
 
-.. automodule:: salp.simple_file_lock
+.. automodule:: salpa.simple_file_lock

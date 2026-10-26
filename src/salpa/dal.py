@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, overload, over
 
 lazy import polars as pl
 
-from salp.simple_file_lock import SimpleWriteLock
+from salpa.simple_file_lock import SimpleWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -182,7 +182,7 @@ class Dal(Protocol):
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp import CsvDal, Dal, ParquetDal
+        >>> from salpa import CsvDal, Dal, ParquetDal
         >>> def save(dal: Dal) -> str:
         ...     return dal.write(pl.DataFrame({"x": [1]}), "example").name
         >>> save(ParquetDal(Path("parquet"))), save(CsvDal(Path("csv")))
@@ -318,15 +318,15 @@ class _FileDal(Dal):
             ValueError: If there are no keys, they lead outside the data directory, or
                 the profile's manifest names an invalid version.
             TypeError: If the profile's manifest file is corrupt.
-            salp.simple_file_lock.FileAlreadyLockedError: If another process holds
+            salpa.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than
-                `salp.dal.DataManifestFile.LOCK_TIMEOUT`.
-            salp.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                `salpa.dal.DataManifestFile.LOCK_TIMEOUT`.
+            salpa.simple_file_lock.FileLockPermissionError: If the manifest cannot
                 be locked.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the profile directory cannot be created or written to.
         """
-        profile_dir = self._get_profile_dir(*keys)
+        profile_dir = self.get_profile_dir(*keys)
         profile_dir.mkdir(parents=True, exist_ok=True)
         manifest = DataManifestFile(profile_dir)
         output_dir = manifest.reserve_new_data_dir()
@@ -429,7 +429,7 @@ class _FileDal(Dal):
         tmp_file.replace(published)
         return published
 
-    def _get_profile_dir(self, *keys: str) -> Path:
+    def get_profile_dir(self, *keys: str) -> Path:
         """Get path to the profile directory described by keys.
 
         Args:
@@ -468,7 +468,7 @@ class _FileDal(Dal):
             FileNotFoundError: If the manifest names a missing version directory.
             TypeError: If the profile's manifest file is corrupt.
         """
-        profile_dir = self._get_profile_dir(*keys)
+        profile_dir = self.get_profile_dir(*keys)
         manifest_file = DataManifestFile(profile_dir)
         if not manifest_file.exists():
             return None
@@ -503,7 +503,7 @@ class ParquetDal(_FileDal):
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp import ParquetDal
+        >>> from salpa import ParquetDal
         >>> dal = ParquetDal(Path("data"))
         >>> dal.write(pl.DataFrame({"x": [1, 2]}), "example").name
         'v0'
@@ -559,7 +559,7 @@ class CsvDal(_FileDal):
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp import CsvDal
+        >>> from salpa import CsvDal
         >>> csv_dal = CsvDal(Path("data"))
         >>> output_dir = csv_dal.write(pl.DataFrame({"x": [1, 2]}), "example_csv")
         >>> (output_dir / "0.csv").read_text().splitlines()
@@ -688,9 +688,9 @@ class DataManifestFile:
             ValueError: If data_dir or the version in the manifest has an invalid
                 name.
             TypeError: If the manifest file is corrupt.
-            salp.simple_file_lock.FileAlreadyLockedError: If another process holds
+            salpa.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than `LOCK_TIMEOUT`.
-            salp.simple_file_lock.FileLockPermissionError: If the manifest cannot
+            salpa.simple_file_lock.FileLockPermissionError: If the manifest cannot
                 be locked.
             OSError: If the manifest file cannot be written.
         """

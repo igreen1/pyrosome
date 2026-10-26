@@ -4,8 +4,8 @@ import pandas as pd
 import polars as pl
 import pytest
 
-from salp import Dataset, SimpleIo
-from salp.dal import DataManifestFile
+from salpa import Dataset, SimpleIo
+from salpa.dal import DataManifestFile
 
 ORDERS = pl.DataFrame({"region": ["eu", "us", "eu"], "amount": [1, 2, 3]})
 

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 
 lazy import polars as pl
 
-from salp.dal import get_accessor
+from salpa.dal import DataManifestFile, get_accessor
 
 if TYPE_CHECKING:
     import os
@@ -14,11 +14,11 @@ if TYPE_CHECKING:
 
     import pandas as pd
 
-    from salp.dal import Dal
+    from salpa.dal import ParquetDal
 
 
 type FilterValue = str | int | bool | dt.date | None
-"""A value `salp.SimpleIo.read` can filter a column by.
+"""A value `salpa.SimpleIo.read` can filter a column by.
 
 `datetime.datetime` is a `datetime.date`, so both are accepted. Floats are not:
 equality on floats is unreliable, since ``0.1 + 0.2 != 0.3``.
@@ -87,7 +87,7 @@ class SimpleIo:
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salp import SimpleIo
+        >>> from salpa import SimpleIo
         >>> io = SimpleIo(Path("data"))
         >>> df = pl.DataFrame({"x": [1, 2, 2], "y": ["a", "b", None]})
         >>> io.write(df, "example").name
@@ -106,7 +106,7 @@ class SimpleIo:
         [(3, 'd')]
     """
 
-    dal: Dal
+    dal: ParquetDal
     """The data access layer reads and writes go through."""
 
     def __init__(self, data_directory: Path | str | os.PathLike[str]) -> None:
@@ -119,6 +119,51 @@ class SimpleIo:
             None.
         """
         self.dal = get_accessor("parquet")(data_directory)
+
+    def available_profiles(self, *keys: str) -> tuple[str, ...]:
+        """List the profiles directly below keys that have been written.
+
+        A profile is a directory holding a manifest. Nested profiles, and
+        directories that only group other profiles, are not listed; pass their
+        path as keys to list what they hold.
+
+        Example:
+            >>> from pathlib import Path
+            >>> import polars as pl
+            >>> from salpa import SimpleIo
+            >>> io = SimpleIo(Path("data"))
+            >>> df = pl.DataFrame({"x": [1]})
+            >>> _ = io.write(df, "shop", "orders")
+            >>> _ = io.write(df, "shop", "totals")
+            >>> io.available_profiles("shop")
+            ('orders', 'totals')
+            >>> io.available_profiles("missing")
+            ()
+
+        Args:
+            *keys: Path components naming the directory to look in. With no keys,
+                the data directory itself.
+
+        Returns:
+            The names of the profiles below keys, sorted. Empty if the directory
+            doesn't exist.
+
+        Raises:
+            ValueError: If keys lead outside the data directory.
+            OSError: If the directory cannot be listed.
+        """
+        directory = (
+            self.dal.data_directory if not keys else self.dal.get_profile_dir(*keys)
+        )
+        if not directory.is_dir():
+            return ()
+        return tuple(
+            sorted(
+                child.name
+                for child in directory.iterdir()
+                if DataManifestFile(child).exists()
+            )
+        )
 
     def read(self, /, *keys: str, **filters: FilterValue) -> pl.LazyFrame:
         """Read a lazy frame, keeping only rows where each column equals a value.
@@ -174,10 +219,10 @@ class SimpleIo:
             ValueError: If there are no keys, they lead outside the data directory, or
                 the profile's manifest names an invalid version.
             TypeError: If the profile's manifest file is corrupt.
-            salp.simple_file_lock.FileAlreadyLockedError: If another process holds
+            salpa.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than
-                `salp.dal.DataManifestFile.LOCK_TIMEOUT`.
-            salp.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                `salpa.dal.DataManifestFile.LOCK_TIMEOUT`.
+            salpa.simple_file_lock.FileLockPermissionError: If the manifest cannot
                 be locked.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the profile directory cannot be created or written to.

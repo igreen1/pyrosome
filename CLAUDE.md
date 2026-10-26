@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`salp` is versioned, append-only on-disk storage for polars data frames (parquet via `ParquetDal`, CSV via `CsvDal`), safe for several processes sharing one data directory. Python 3.15+ (uses `lazy import`, PEP 695 generics, deferred annotations). Managed with uv; the package lives in `src/salp/`. Not published to PyPI.
+`salpa` is versioned, append-only on-disk storage for polars data frames (parquet via `ParquetDal`, CSV via `CsvDal`), safe for several processes sharing one data directory. Python 3.15+ (uses `lazy import`, PEP 695 generics, deferred annotations). Managed with uv; the package lives in `src/salpa/`. Not published to PyPI.
 
 ## Platform support
 
@@ -18,7 +18,7 @@ SMB shares are second-class: support them where it's practical, but they are low
 uv sync --all-groups                     # dev + docs dependencies
 uv run pytest                            # unit tests AND every doc/README/docstring example
 uv run pytest tests/dal/test_dal.py::TestWrite::test_write_then_read
-uv run pytest docs/recipes.rst           # one docs page's doctests (also README.md, src/salp/dal.py)
+uv run pytest docs/recipes.rst           # one docs page's doctests (also README.md, src/salpa/dal.py)
 uv run ruff check src docs conftest.py && uv run ruff format --check src docs conftest.py
 uv run ty check src docs conftest.py
 uv run mypy src docs conftest.py
@@ -40,12 +40,12 @@ Consequences that shape the code:
 
 ## Architecture
 
-`src/salp/api.py` holds `SimpleIo`, a thin parquet-only wrapper whose `read` takes equality filters as keyword arguments (`None` matches nulls; floats are rejected), and whose `write`/`append` also take pandas frames (named index levels become columns, an unnamed index is dropped). pandas is never imported by salp itself: it's an optional extra (`salp[pandas]`, with pyarrow, which polars needs for pandas' string columns), and a dev dependency with `pandas-stubs`. `src/salp/datasets.py` holds `Dataset`, which reads every profile below some keys through a `SimpleIo` with the same filters; subclasses define `_calc_<profile>` methods returning a frame, which `get_cache_profile` calls (unbound) on the dataset `without_filters` and writes, recalculating only with `refresh=True`. `get_subset`/`without_filters` construct `type(self)`, so subclasses must keep `Dataset.__init__`'s signature. The storage itself is two modules in `src/salp/`:
+`src/salpa/api.py` holds `SimpleIo`, a thin parquet-only wrapper whose `read` takes equality filters as keyword arguments (`None` matches nulls; floats are rejected), and whose `write`/`append` also take pandas frames (named index levels become columns, an unnamed index is dropped). pandas is never imported by salpa itself: it's an optional extra (`salpa[pandas]`, with pyarrow, which polars needs for pandas' string columns), and a dev dependency with `pandas-stubs`. `src/salpa/datasets.py` holds `Dataset`, which reads every profile below some keys through a `SimpleIo` with the same filters; subclasses define `_calc_<profile>` methods returning a frame, which `get_cache_profile` calls (unbound) on the dataset `without_filters` and writes, recalculating only with `refresh=True`. `get_subset`/`without_filters` construct `type(self)`, so subclasses must keep `Dataset.__init__`'s signature. The storage itself is two modules in `src/salpa/`:
 
 - `dal.py`: the `Dal` protocol (public API: `read`, `write`, `append`), `_FileDal` (abstract `Dal` implementation holding all the file operations), `ParquetDal` and `CsvDal` (subclass `_FileDal`, defining only `_sink`/`_scan` and `extension`), `get_accessor` (file ending → class), and `DataManifestFile`.
 - `simple_file_lock.py`: `SimpleWriteLock`, an advisory cross-process lock implemented as a `<file>.write_lock` sibling file, with timeout/poll retry.
 
-Public names (`SimpleIo`, `Dataset`, `Dal`, `ParquetDal`, `CsvDal`, `get_accessor`) are re-exported from `salp/__init__.py`. Docs, examples and docstrings teach `from salp import ParquetDal`, and `docs/api.rst` documents them as `salp.<name>` (cross-reference them that way); rarely needed internals such as `DataManifestFile` and the lock are documented in their submodules. Library code imports from the submodules, never from `salp`, to avoid circular imports.
+Public names (`SimpleIo`, `Dataset`, `Dal`, `ParquetDal`, `CsvDal`, `get_accessor`) are re-exported from `salpa/__init__.py`. Docs, examples and docstrings teach `from salpa import ParquetDal`, and `docs/api.rst` documents them as `salpa.<name>` (cross-reference them that way); rarely needed internals such as `DataManifestFile` and the lock are documented in their submodules. Library code imports from the submodules, never from `salpa`, to avoid circular imports.
 
 On-disk layout: `data_directory/<keys...>/` is a *profile* containing `manifest.json` (`{"latest_data_dir": "vN"}`) and one `vN/` dir per version holding `0.<ext>`, `1.<ext>`, … Keys are path components and must resolve inside `data_directory`.
 
