@@ -44,18 +44,18 @@ SMB shares are supported as a lower priority. pyrosome aims to work on them, but
 
 ## Install
 
-pyrosome requires Python 3.14 or newer. It is not published to PyPI, so install it from a local checkout.
+pyrosome requires Python 3.14 or newer.
 
-Add it to another uv project:
+Add it to a uv project:
 
 ```console
-uv add /path/to/pyrosome
+uv add pyrosome
 ```
 
 Or install it into the current environment with pip:
 
 ```console
-pip install /path/to/pyrosome
+pip install pyrosome
 ```
 
 ### Development setup
@@ -153,3 +153,7 @@ uv run sphinx-build -W -b html docs docs/_build/html
 ```
 
 Then open `docs/_build/html/index.html`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

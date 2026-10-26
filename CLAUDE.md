@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`pyrosome` is versioned, append-only on-disk storage for polars data frames (parquet via `ParquetDal`, CSV via `CsvDal`), safe for several processes sharing one data directory. Python 3.14+ (uses PEP 695 generics, deferred annotations). Managed with uv; the package lives in `src/pyrosome/`. Not published to PyPI.
+`pyrosome` is versioned, append-only on-disk storage for polars data frames (parquet via `ParquetDal`, CSV via `CsvDal`), safe for several processes sharing one data directory. Python 3.14+ (uses PEP 695 generics, deferred annotations). Managed with uv; the package lives in `src/pyrosome/`. Published to PyPI as `pyrosome` by the `publish-pypi` job in `.github/workflows/ci.yml` (trusted publishing). MIT licensed.
 
 ## Platform support
 
