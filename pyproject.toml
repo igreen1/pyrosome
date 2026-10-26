@@ -13,6 +13,11 @@ dependencies = [
     "polars>=2.0.0",
 ]
 
+[project.urls]
+Documentation = "https://iangreen.dev/pyrosome/"
+Repository = "https://github.com/igreen1/pyrosome"
+Issues = "https://github.com/igreen1/pyrosome/issues"
+
 [project.optional-dependencies]
 pandas = [
     "pandas>=3.1.0",
