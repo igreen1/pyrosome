@@ -4,12 +4,12 @@ Quickstart
 Install
 -------
 
-pyrosome needs Python 3.14 or newer and polars. It is not published to PyPI, so
-install it from a local checkout:
+pyrosome needs Python 3.14 or newer and polars. Install it from
+`PyPI <https://pypi.org/project/pyrosome/>`_:
 
 .. code-block:: console
 
-   $ uv add /path/to/pyrosome
+   $ uv add pyrosome
 
 Create a data access layer
 --------------------------

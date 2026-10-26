@@ -170,6 +170,12 @@ jobs:
           uv version --bump "$BUMP" --no-sync
           echo "tag=v$(uv version --short)" >> "$GITHUB_OUTPUT"
       - run: uv build
+      # The publish-pypi job uploads exactly what was built (and released) here.
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-dist
+          path: dist/
+          if-no-files-found: error
       # [skip ci] keeps the bump commit from starting another release if
       # this is ever switched from GITHUB_TOKEN to a token that triggers runs.
       - name: Commit and tag
@@ -186,3 +192,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.bump.outputs.tag }}
         run: gh release create "$TAG" dist/* --title "$TAG" --generate-notes --verify-tag
+
+  # Uses PyPI trusted publishing (OIDC), so no API token is stored in GitHub.
+  # Needs a trusted publisher configured on PyPI and a `pypi` environment here.
+  publish-pypi:
+    needs: release
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/pyrosome/
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          version: "0.13.5"
+      - uses: actions/download-artifact@v8
+        with:
+          name: release-dist
+          path: dist/
+      - run: uv publish --trusted-publishing always
