@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 
 lazy import polars as pl
 
-from salpa.dal import DataManifestFile, get_accessor
+from pyrosome.dal import DataManifestFile, get_accessor
 
 if TYPE_CHECKING:
     import os
@@ -14,11 +14,11 @@ if TYPE_CHECKING:
 
     import pandas as pd
 
-    from salpa.dal import ParquetDal
+    from pyrosome.dal import ParquetDal
 
 
 type FilterValue = str | int | bool | dt.date | None
-"""A value `salpa.SimpleIo.read` can filter a column by.
+"""A value `pyrosome.SimpleIo.read` can filter a column by.
 
 `datetime.datetime` is a `datetime.date`, so both are accepted. Floats are not:
 equality on floats is unreliable, since ``0.1 + 0.2 != 0.3``.
@@ -87,7 +87,7 @@ class SimpleIo:
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salpa import SimpleIo
+        >>> from pyrosome import SimpleIo
         >>> io = SimpleIo(Path("data"))
         >>> df = pl.DataFrame({"x": [1, 2, 2], "y": ["a", "b", None]})
         >>> io.write(df, "example").name
@@ -130,7 +130,7 @@ class SimpleIo:
         Example:
             >>> from pathlib import Path
             >>> import polars as pl
-            >>> from salpa import SimpleIo
+            >>> from pyrosome import SimpleIo
             >>> io = SimpleIo(Path("data"))
             >>> df = pl.DataFrame({"x": [1]})
             >>> _ = io.write(df, "shop", "orders")
@@ -219,10 +219,10 @@ class SimpleIo:
             ValueError: If there are no keys, they lead outside the data directory, or
                 the profile's manifest names an invalid version.
             TypeError: If the profile's manifest file is corrupt.
-            salpa.simple_file_lock.FileAlreadyLockedError: If another process holds
+            pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than
-                `salpa.dal.DataManifestFile.LOCK_TIMEOUT`.
-            salpa.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
+            pyrosome.simple_file_lock.FileLockPermissionError: If the manifest cannot
                 be locked.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the profile directory cannot be created or written to.

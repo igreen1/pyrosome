@@ -42,7 +42,7 @@ class SimpleWriteLock:
 
     Example:
         >>> from pathlib import Path
-        >>> from salpa.simple_file_lock import SimpleWriteLock, file_is_locked
+        >>> from pyrosome.simple_file_lock import SimpleWriteLock, file_is_locked
         >>> target = Path("notes.txt")
         >>> with SimpleWriteLock(target, timeout=1.0):
         ...     file_is_locked(target)

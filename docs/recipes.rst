@@ -7,7 +7,7 @@ Short solutions to common tasks. The recipes build on each other and start from:
 
    >>> from pathlib import Path
    >>> import polars as pl
-   >>> from salpa import ParquetDal
+   >>> from pyrosome import ParquetDal
    >>> data_dir = Path("data")
    >>> dal = ParquetDal(data_dir)
 
@@ -39,13 +39,13 @@ file, so a failed batch never damages earlier ones.
    >>> dal.read("events").collect()["event"].to_list()
    ['start', 'click', 'click', 'stop']
 
-To start a profile that may not exist yet, `~salpa.ParquetDal.append` falls back
+To start a profile that may not exist yet, `~pyrosome.ParquetDal.append` falls back
 to a write and warns. Write the first batch explicitly to avoid the warning.
 
 Query without loading everything
 --------------------------------
 
-`~salpa.ParquetDal.read` is lazy. Filter and select before ``collect`` so polars
+`~pyrosome.ParquetDal.read` is lazy. Filter and select before ``collect`` so polars
 only reads the rows and columns it needs.
 
 .. doctest::
@@ -63,14 +63,14 @@ Filter by column values
 -----------------------
 
 For the common case of keeping rows where columns equal given values,
-`~salpa.SimpleIo` takes the filters as keyword arguments to
-`~salpa.SimpleIo.read`. It stores parquet, like `~salpa.ParquetDal`,
+`~pyrosome.SimpleIo` takes the filters as keyword arguments to
+`~pyrosome.SimpleIo.read`. It stores parquet, like `~pyrosome.ParquetDal`,
 so it reads the same data directory. ``None`` matches nulls, and a misspelt column
 name raises straight away rather than at ``collect``.
 
 .. doctest::
 
-   >>> from salpa import SimpleIo
+   >>> from pyrosome import SimpleIo
    >>> io = SimpleIo(data_dir)
    >>> io.read("events", event="click").collect()["ms"].to_list()
    [120, 340]
@@ -82,7 +82,7 @@ name raises straight away rather than at ``collect``.
 Floats can't be filtered on, because float equality is unreliable. Use
 ``filter`` with a tolerance for those.
 
-`~salpa.SimpleIo.write` and `~salpa.SimpleIo.append` also take pandas
+`~pyrosome.SimpleIo.write` and `~pyrosome.SimpleIo.append` also take pandas
 data frames. Named index levels, such as the keys of a ``groupby``, are stored as
 columns, and an unnamed index is dropped. Converting pandas data needs the
 ``pandas`` extra, which installs pandas and pyarrow.
@@ -99,13 +99,13 @@ columns, and an unnamed index is dropped. Converting pandas data needs the
 Group profiles into a dataset
 -----------------------------
 
-A `~salpa.Dataset` reads the profiles below the same keys with the same filters,
+A `~pyrosome.Dataset` reads the profiles below the same keys with the same filters,
 so every profile in it must have the filtered columns.
-`~salpa.Dataset.get_subset` narrows it further.
+`~pyrosome.Dataset.get_subset` narrows it further.
 
 .. doctest::
 
-   >>> from salpa import Dataset
+   >>> from pyrosome import Dataset
    >>> orders = pl.DataFrame({"region": ["eu", "us", "eu"], "amount": [1, 2, 3]})
    >>> _ = io.write(orders, "shop", "orders")
    >>> eu = Dataset(io, "shop", region="eu")
@@ -114,9 +114,9 @@ so every profile in it must have the filtered columns.
    >>> eu.get_subset(amount=3).get_profile("orders").collect()["amount"].to_list()
    [3]
 
-To derive a profile from others, subclass `~salpa.Dataset` and add a
+To derive a profile from others, subclass `~pyrosome.Dataset` and add a
 ``_calc_<profile>`` method returning its data. The first
-`~salpa.Dataset.get_cache_profile` stores it, calculated from every row rather
+`~pyrosome.Dataset.get_cache_profile` stores it, calculated from every row rather
 than just the dataset's subset, and later calls read the stored copy. It isn't
 updated when the profiles it's calculated from change: pass ``refresh=True`` to
 recalculate it.
@@ -139,7 +139,7 @@ recalculate it.
 Read data that may not exist yet
 --------------------------------
 
-`~salpa.ParquetDal.read` raises `FileNotFoundError` when a profile has no data.
+`~pyrosome.ParquetDal.read` raises `FileNotFoundError` when a profile has no data.
 
 .. doctest::
 
@@ -187,7 +187,7 @@ version with one file. The lazy read streams straight into the new version.
 Change the schema
 -----------------
 
-`~salpa.ParquetDal.append` rejects data with different columns. To add a column,
+`~pyrosome.ParquetDal.append` rejects data with different columns. To add a column,
 write a new version that includes it.
 
 .. doctest::
@@ -233,13 +233,13 @@ Remove old versions
 
 Delete version directories older than the last few. Only do this when no reader
 can still be using them, since a lazy frame from an earlier
-`~salpa.ParquetDal.read` fails if its files disappear.
+`~pyrosome.ParquetDal.read` fails if its files disappear.
 
 .. doctest::
 
    >>> import shutil
    >>> import stat
-   >>> from salpa.dal import DataManifestFile
+   >>> from pyrosome.dal import DataManifestFile
    >>> def remove_read_only(remove, path, _error):
    ...     # data files are read only, and Windows can't delete read-only files
    ...     Path(path).chmod(stat.S_IWRITE)
@@ -288,7 +288,7 @@ Keep each format in its own data directory; see the limitations in
 
 .. doctest::
 
-   >>> from salpa import CsvDal
+   >>> from pyrosome import CsvDal
    >>> csv_dal = CsvDal(data_dir / "export")
    >>> export_dir = csv_dal.write(dal.read("sales", "eu"), "sales", "eu")
    >>> (export_dir / "0.csv").read_text().splitlines()
@@ -301,13 +301,13 @@ Recover from a crashed writer
 -----------------------------
 
 If a process dies while updating a manifest, its lock file stays behind and
-later writes raise `~salpa.simple_file_lock.FileAlreadyLockedError` after
-`~salpa.dal.DataManifestFile.LOCK_TIMEOUT` seconds. Once you are sure no
+later writes raise `~pyrosome.simple_file_lock.FileAlreadyLockedError` after
+`~pyrosome.dal.DataManifestFile.LOCK_TIMEOUT` seconds. Once you are sure no
 writer is running, remove the lock file.
 
 .. doctest::
 
-   >>> from salpa.simple_file_lock import file_is_locked
+   >>> from pyrosome.simple_file_lock import file_is_locked
    >>> manifest_path = data_dir / "events" / "manifest.json"
    >>> lock_file = manifest_path.with_name("manifest.json.write_lock")
    >>> lock_file.touch()  # simulate a crashed writer

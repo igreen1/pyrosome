@@ -4,7 +4,7 @@ import time
 
 import pytest
 
-from salpa.simple_file_lock import (
+from pyrosome.simple_file_lock import (
     FileAlreadyLockedError,
     LockError,
     SimpleWriteLock,

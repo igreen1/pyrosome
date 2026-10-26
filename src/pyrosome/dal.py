@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, overload, over
 
 lazy import polars as pl
 
-from salpa.simple_file_lock import SimpleWriteLock
+from pyrosome.simple_file_lock import SimpleWriteLock
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -182,7 +182,7 @@ class Dal(Protocol):
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salpa import CsvDal, Dal, ParquetDal
+        >>> from pyrosome import CsvDal, Dal, ParquetDal
         >>> def save(dal: Dal) -> str:
         ...     return dal.write(pl.DataFrame({"x": [1]}), "example").name
         >>> save(ParquetDal(Path("parquet"))), save(CsvDal(Path("csv")))
@@ -318,10 +318,10 @@ class _FileDal(Dal):
             ValueError: If there are no keys, they lead outside the data directory, or
                 the profile's manifest names an invalid version.
             TypeError: If the profile's manifest file is corrupt.
-            salpa.simple_file_lock.FileAlreadyLockedError: If another process holds
+            pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than
-                `salpa.dal.DataManifestFile.LOCK_TIMEOUT`.
-            salpa.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
+            pyrosome.simple_file_lock.FileLockPermissionError: If the manifest cannot
                 be locked.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the profile directory cannot be created or written to.
@@ -503,7 +503,7 @@ class ParquetDal(_FileDal):
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salpa import ParquetDal
+        >>> from pyrosome import ParquetDal
         >>> dal = ParquetDal(Path("data"))
         >>> dal.write(pl.DataFrame({"x": [1, 2]}), "example").name
         'v0'
@@ -559,7 +559,7 @@ class CsvDal(_FileDal):
     Example:
         >>> from pathlib import Path
         >>> import polars as pl
-        >>> from salpa import CsvDal
+        >>> from pyrosome import CsvDal
         >>> csv_dal = CsvDal(Path("data"))
         >>> output_dir = csv_dal.write(pl.DataFrame({"x": [1, 2]}), "example_csv")
         >>> (output_dir / "0.csv").read_text().splitlines()
@@ -688,9 +688,9 @@ class DataManifestFile:
             ValueError: If data_dir or the version in the manifest has an invalid
                 name.
             TypeError: If the manifest file is corrupt.
-            salpa.simple_file_lock.FileAlreadyLockedError: If another process holds
+            pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than `LOCK_TIMEOUT`.
-            salpa.simple_file_lock.FileLockPermissionError: If the manifest cannot
+            pyrosome.simple_file_lock.FileLockPermissionError: If the manifest cannot
                 be locked.
             OSError: If the manifest file cannot be written.
         """

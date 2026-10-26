@@ -1,8 +1,8 @@
-# salpa
+# pyrosome
 
 Versioned, append-only storage for [polars](https://pola.rs) data frames.
 
-salpa stores data frames on disk as parquet (or CSV) files, keeps every version you write, and reads them back as lazy frames. Several processes can read, write and append to the same data at once without overwriting each other or seeing half-written data.
+pyrosome stores data frames on disk as parquet (or CSV) files, keeps every version you write, and reads them back as lazy frames. Several processes can read, write and append to the same data at once without overwriting each other or seeing half-written data.
 
 ## Purpose
 
@@ -12,7 +12,7 @@ Saving data frames to files is easy. Keeping those files trustworthy is harder:
 - two processes writing at once can clobber each other;
 - a reader can pick up a file that is still being written.
 
-salpa handles this with a small, predictable layout on the filesystem. There is no database or server to run.
+pyrosome handles this with a small, predictable layout on the filesystem. There is no database or server to run.
 
 ## Project summary
 
@@ -38,24 +38,24 @@ data/
 
 ## Platform support
 
-salpa supports Windows, Linux and macOS, with the data directory on a local disk or an NFS share (NFSv3 or later).
+pyrosome supports Windows, Linux and macOS, with the data directory on a local disk or an NFS share (NFSv3 or later).
 
-SMB shares are supported as a lower priority. salpa aims to work on them, but they get less attention and testing, and some SMB setups have limitations. For example, they may ignore the read-only permission salpa sets on finished data files.
+SMB shares are supported as a lower priority. pyrosome aims to work on them, but they get less attention and testing, and some SMB setups have limitations. For example, they may ignore the read-only permission pyrosome sets on finished data files.
 
 ## Install
 
-salpa requires Python 3.15 or newer. It is not published to PyPI, so install it from a local checkout.
+pyrosome requires Python 3.15 or newer. It is not published to PyPI, so install it from a local checkout.
 
 Add it to another uv project:
 
 ```console
-uv add /path/to/salpa
+uv add /path/to/pyrosome
 ```
 
 Or install it into the current environment with pip:
 
 ```console
-pip install /path/to/salpa
+pip install /path/to/pyrosome
 ```
 
 ### Development setup
@@ -81,7 +81,7 @@ This installs the development tools (pytest, ruff, ty, mypy, pylint) and the doc
 ```pycon
 >>> from pathlib import Path
 >>> import polars as pl
->>> from salpa import ParquetDal
+>>> from pyrosome import ParquetDal
 >>> dal = ParquetDal(Path("data"))
 >>> orders = pl.DataFrame(
 ...     {"order_id": [1, 2, 3], "region": ["eu", "eu", "us"], "total": [9.5, 20.0, 7.25]}
@@ -128,7 +128,7 @@ Writing again creates `v1`, and `read` now returns only the new data. The earlie
 To store CSV instead, use `CsvDal` with the same methods. Keep each format in its own data directory, because a CSV write to a parquet profile hides the parquet data from `ParquetDal`:
 
 ```pycon
->>> from salpa import CsvDal
+>>> from pyrosome import CsvDal
 >>> CsvDal(Path("exports")).write(orders, "sales", "orders").as_posix()
 'exports/sales/orders/v0'
 
