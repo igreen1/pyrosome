@@ -17,6 +17,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Final, NamedTuple, Self, cast
 
+from pyrosome._files import retry_while_in_use
 from pyrosome._logging import logged_failure
 
 if TYPE_CHECKING:
@@ -122,10 +123,12 @@ def _read_text(path: Path) -> str | None:
         Its contents, or None if it doesn't exist.
 
     Raises:
-        OSError: If the file exists but cannot be read.
+        OSError: If the file exists but cannot be read, on Windows only once it
+            has been in use by other processes for
+            `pyrosome._files.IN_USE_TIMEOUT`.
     """
     try:
-        return path.read_text(encoding="utf-8")
+        return retry_while_in_use(lambda: path.read_text(encoding="utf-8"), path)
     except FileNotFoundError:
         return None
 
@@ -163,7 +166,7 @@ def _rename_if_exists(source: Path, target: Path) -> bool:
         OSError: If source exists but cannot be renamed.
     """
     try:
-        source.rename(target)
+        retry_while_in_use(lambda: source.rename(target), source)
     except FileNotFoundError:
         return False
     return True
@@ -297,10 +300,21 @@ class SimpleWriteLock:
             msg = f"File {self.path} is already locked."
             raise LockError(msg)
         attempts = 1 + math.ceil(self.timeout / self.poll_interval)
+        # reading the lock file stops its holder deleting it on Windows, so it is
+        # only read again once the lock last seen could have become stale
+        check_stale_at = time.monotonic()
         for attempt in range(attempts):
             if attempt:
                 time.sleep(self.poll_interval)
-            if self._try_acquire() or (self._break_if_stale() and self._try_acquire()):
+            if self._try_acquire():
+                acquired = True
+            elif time.monotonic() < check_stale_at:
+                acquired = False
+            else:
+                stale_in = self._break_if_stale()
+                check_stale_at = time.monotonic() + stale_in
+                acquired = not stale_in and self._try_acquire()
+            if acquired:
                 _logger.debug(
                     "Acquired lock %s after %d attempt(s)", self.lock_path, attempt + 1
                 )
@@ -377,7 +391,7 @@ class SimpleWriteLock:
                 self.lock_path,
             )
             return
-        self.lock_path.unlink()
+        retry_while_in_use(self.lock_path.unlink, self.lock_path)
         _logger.debug("Released lock %s", self.lock_path)
 
     def _try_acquire(self) -> bool:
@@ -428,7 +442,7 @@ class SimpleWriteLock:
             return None
         return _Holder(contents, time.time() - modified)
 
-    def _break_if_stale(self) -> bool:
+    def _break_if_stale(self) -> float:
         """Delete the lock file if it is older than `stale_after`.
 
         The lock file is renamed before it is deleted, so of several processes
@@ -436,21 +450,25 @@ class SimpleWriteLock:
         fresh lock, taken after the stale one was checked, it is put back.
 
         Returns:
-            Whether a stale lock was broken.
+            Seconds until the lock could become stale, so it need not be read
+            again before then: 0 if it was broken, is no longer held or was broken
+            by another process, and infinity without `stale_after`. A lock taken
+            after this one is only younger, so waiting that long is safe.
 
         Raises:
             OSError: If the lock file cannot be read, renamed or deleted.
         """
         if self.stale_after is None:
-            return False
-        holder = self._holder()
-        if holder is None or holder.age < self.stale_after:
-            return False
+            return math.inf
+        if (holder := self._holder()) is None:
+            return 0.0
+        if holder.age < self.stale_after:
+            return self.stale_after - holder.age
         broken = self.lock_path.with_name(
             f".{self.lock_path.name}.{uuid.uuid4().hex}.stale"
         )
         if not _rename_if_exists(self.lock_path, broken):
-            return False
+            return 0.0
         if (contents := _read_text(broken)) != holder.contents:
             # another process broke the stale lock and took it in the meantime
             if not _create_exclusive(self.lock_path, contents or ""):
@@ -459,7 +477,7 @@ class SimpleWriteLock:
                     self.lock_path,
                 )
             broken.unlink()
-            return False
+            return 0.0
         broken.unlink()
         _logger.warning(
             "Broke stale lock %s, taken %.0fs ago by %s",
@@ -467,7 +485,7 @@ class SimpleWriteLock:
             holder.age,
             holder.contents,
         )
-        return True
+        return 0.0
 
 
 def file_is_locked(path: Path) -> bool:

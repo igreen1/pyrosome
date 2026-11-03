@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from pyrosome import simple_file_lock
+from pyrosome import _files, simple_file_lock
 from pyrosome.dal import DataManifestFile
 from pyrosome.simple_file_lock import (
     FileAlreadyLockedError,
@@ -238,3 +238,41 @@ def test_permission_error_on_windows_raises_after_timeout(tmp_path, monkeypatch)
     ):
         pass
     assert time.monotonic() - start >= 0.2
+
+
+def test_waiting_reads_a_fresh_lock_file_once(tmp_path, monkeypatch):
+    """Reading the lock file stops its holder deleting it on Windows."""
+    path = tmp_path / "data.json"
+    write_holder(path, seconds_ago=0)
+    reads = []
+    read_text = simple_file_lock._read_text
+
+    def counted(file):
+        reads.append(file)
+        return read_text(file)
+
+    monkeypatch.setattr(simple_file_lock, "_read_text", counted)
+    lock = SimpleWriteLock(path, timeout=0.2, poll_interval=0.01, stale_after=120)
+    with pytest.raises(FileAlreadyLockedError):
+        lock.__enter__()
+    assert reads == [lock_file(path)]
+
+
+def test_release_retries_while_windows_has_the_file_open(tmp_path, monkeypatch):
+    monkeypatch.setattr(_files, "IN_USE_MEANS_RETRY", True)
+    monkeypatch.setattr(_files, "IN_USE_POLL_INTERVAL", 0.001)
+    path = tmp_path / "data.json"
+    unlink = Path.unlink
+    refusals = []
+
+    def refuse_twice(self, *args, **kwargs):
+        if self == lock_file(path) and len(refusals) < 2:
+            refusals.append(self)
+            raise PermissionError
+        return unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", refuse_twice)
+    with SimpleWriteLock(path):
+        pass
+    assert len(refusals) == 2
+    assert not file_is_locked(path)

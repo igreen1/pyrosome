@@ -33,15 +33,15 @@ has open, which CPython's `open` does without allowing deletion.
 IN_USE_TIMEOUT: Final[float] = 5.0
 """Seconds `retry_while_in_use` keeps retrying, far longer than a manifest read."""
 
-IN_USE_POLL_INTERVAL: Final[float] = 0.01
+IN_USE_POLL_INTERVAL: Final[float] = 0.001
 """Seconds `retry_while_in_use` waits between attempts."""
 
 
 def retry_while_in_use[T](action: Callable[[], T], file: Path) -> T:
     """Run action, retrying on Windows while another process has file open.
 
-    Readers hold the manifest open only for a moment, so a commit or read that
-    Windows refuses is retried until `IN_USE_TIMEOUT`. Elsewhere a
+    Readers hold the manifest and lock files open only for a moment, so an
+    operation Windows refuses is retried until `IN_USE_TIMEOUT`. Elsewhere a
     PermissionError means permission is really denied, so it is raised at once.
 
     Args:
