@@ -1,15 +1,22 @@
 """Tests for the simple file lock."""
 
+import datetime
+import json
 import logging
+import os
+import socket
 import time
 from pathlib import Path
 
 import pytest
 
+from pyrosome import simple_file_lock
 from pyrosome.simple_file_lock import (
     FileAlreadyLockedError,
+    FileLockPermissionError,
     LockError,
     SimpleWriteLock,
+    _Holder,
     file_is_locked,
 )
 
@@ -91,3 +98,136 @@ def test_failed_release_logs_exception(tmp_path, monkeypatch, caplog):
     assert record.levelno == logging.ERROR
     assert record.exc_info is not None
     assert record.getMessage().startswith("Cannot release lock ")
+
+
+def lock_file(path):
+    return path.with_name(path.name + ".write_lock")
+
+
+def write_holder(path, seconds_ago, token="other"):
+    created = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
+        seconds=seconds_ago
+    )
+    lock_file(path).write_text(
+        json.dumps({"host": "elsewhere", "pid": 1, "created": created.isoformat(), "token": token})
+    )
+
+
+def test_lock_file_names_holder(tmp_path):
+    path = tmp_path / "data.json"
+    with SimpleWriteLock(path):
+        holder = json.loads(lock_file(path).read_text())
+    assert holder["host"] == socket.gethostname()
+    assert holder["pid"] == os.getpid()
+    created = datetime.datetime.fromisoformat(holder["created"])
+    assert abs(datetime.datetime.now(datetime.UTC) - created).total_seconds() < 60
+
+
+def test_stale_lock_is_broken(tmp_path, caplog):
+    path = tmp_path / "data.json"
+    write_holder(path, seconds_ago=200)
+    with SimpleWriteLock(path, stale_after=120):
+        assert json.loads(lock_file(path).read_text())["pid"] == os.getpid()
+    assert not file_is_locked(path)
+    [record] = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert "Broke stale lock" in record.getMessage()
+    assert "elsewhere" in record.getMessage()
+    # the renamed lock file is deleted too
+    assert sorted(p.name for p in tmp_path.iterdir()) == []
+
+
+def test_fresh_lock_is_not_broken(tmp_path):
+    path = tmp_path / "data.json"
+    write_holder(path, seconds_ago=5)
+    with pytest.raises(FileAlreadyLockedError), SimpleWriteLock(path, stale_after=120):
+        pass
+    assert file_is_locked(path)
+
+
+def test_lock_is_never_broken_without_stale_after(tmp_path):
+    path = tmp_path / "data.json"
+    write_holder(path, seconds_ago=10_000)
+    with pytest.raises(FileAlreadyLockedError), SimpleWriteLock(path):
+        pass
+
+
+@pytest.mark.parametrize("contents", ["", "{", '{"created": "yesterday"}'])
+def test_lock_without_time_uses_modification_time(tmp_path, contents):
+    path = tmp_path / "data.json"
+    lock_file(path).write_text(contents)
+    with pytest.raises(FileAlreadyLockedError), SimpleWriteLock(path, stale_after=120):
+        pass
+    long_ago = time.time() - 200
+    os.utime(lock_file(path), (long_ago, long_ago))
+    with SimpleWriteLock(path, stale_after=120):
+        pass
+
+
+def test_breaking_lock_taken_meanwhile_puts_it_back(tmp_path, monkeypatch):
+    path = tmp_path / "data.json"
+    # another process broke the stale lock and took it after we checked its age
+    write_holder(path, seconds_ago=0, token="fresh")
+    fresh = lock_file(path).read_text()
+    monkeypatch.setattr(
+        SimpleWriteLock, "_holder", lambda _self: _Holder("stale contents", 1000.0)
+    )
+    with pytest.raises(FileAlreadyLockedError), SimpleWriteLock(path, stale_after=120):
+        pass
+    assert lock_file(path).read_text() == fresh
+    assert sorted(p.name for p in tmp_path.iterdir()) == [lock_file(path).name]
+
+
+def test_release_leaves_lock_taken_by_another_process(tmp_path, caplog):
+    path = tmp_path / "data.json"
+    with SimpleWriteLock(path):
+        # held so long that another process broke it as stale and took it
+        write_holder(path, seconds_ago=0)
+    assert file_is_locked(path)
+    assert "broken as stale" in caplog.text
+
+
+def test_permission_error_raises_immediately(tmp_path, monkeypatch):
+    monkeypatch.setattr(simple_file_lock, "_PERMISSION_ERROR_MEANS_HELD", False)
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError
+
+    monkeypatch.setattr(Path, "open", denied)
+    start = time.monotonic()
+    with pytest.raises(FileLockPermissionError), SimpleWriteLock(tmp_path / "f", timeout=5):
+        pass
+    assert time.monotonic() - start < 1
+
+
+def test_permission_error_on_windows_means_held(tmp_path, monkeypatch):
+    monkeypatch.setattr(simple_file_lock, "_PERMISSION_ERROR_MEANS_HELD", True)
+    real_open = Path.open
+    denials = [3]
+
+    def denied_at_first(self, *args, **kwargs):
+        if denials[0]:
+            denials[0] -= 1
+            raise PermissionError
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", denied_at_first)
+    path = tmp_path / "data.json"
+    with SimpleWriteLock(path, timeout=5, poll_interval=0.01):
+        assert file_is_locked(path)
+    assert denials == [0]
+
+
+def test_permission_error_on_windows_raises_after_timeout(tmp_path, monkeypatch):
+    monkeypatch.setattr(simple_file_lock, "_PERMISSION_ERROR_MEANS_HELD", True)
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError
+
+    monkeypatch.setattr(Path, "open", denied)
+    start = time.monotonic()
+    with (
+        pytest.raises(FileLockPermissionError),
+        SimpleWriteLock(tmp_path / "f", timeout=0.2, poll_interval=0.01),
+    ):
+        pass
+    assert time.monotonic() - start >= 0.2
