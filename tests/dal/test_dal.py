@@ -2,7 +2,9 @@
 
 import json
 import logging
+import os
 import stat
+import sys
 import threading
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
@@ -11,7 +13,9 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from pyrosome.dal import DataManifestFile, ParquetDal, ProfileNotFoundError
+from pyrosome import _keys
+from pyrosome.api import SimpleIo
+from pyrosome.dal import CsvDal, Dal, DataManifestFile, ParquetDal, ProfileNotFoundError
 from pyrosome.simple_file_lock import FileAlreadyLockedError, SimpleWriteLock
 
 WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
@@ -322,6 +326,11 @@ class TestKeys:
             ("v0",),
             ("a/v12",),
             ("manifest.json",),
+            (".hidden",),
+            ("a", ".b"),
+            ("a/.b/c",),
+            ("a\\.b",),
+            (".snapshot",),
             ("a\0b",),
             ("2024-01-01T10:00",),
         ],
@@ -330,6 +339,16 @@ class TestKeys:
         with pytest.raises(ValueError, match="Invalid key"):
             dal.write(df, *keys)
         assert not list(dal.data_directory.iterdir())
+
+    def test_hidden_key_message(self, dal, df):
+        with pytest.raises(ValueError, match="hidden path components"):
+            dal.write(df, "a", ".b")
+
+    def test_hidden_data_directory_is_allowed(self, tmp_path, df):
+        dal = ParquetDal(tmp_path / ".cache")
+        dal.write(df, *KEYS)
+        assert dal.available_profiles() == (KEYS,)
+        assert_frame_equal(dal.read(*KEYS).collect(), df)
 
     def test_invalid_keys_are_rejected_on_read_and_append(self, dal, df):
         for method in (dal.read, lambda *keys: dal.append(df, *keys)):
@@ -340,6 +359,248 @@ class TestKeys:
     def test_valid_keys(self, dal, df, keys):
         dal.write(df, *keys)
         assert_frame_equal(dal.read(*keys).collect(), df)
+
+
+class TestAvailableProfiles:
+    def test_empty_data_directory(self, dal):
+        assert dal.available_profiles() == ()
+
+    def test_missing_data_directory(self, tmp_path):
+        assert ParquetDal(tmp_path / "missing").available_profiles() == ()
+
+    def test_missing_keys(self, dal, df):
+        dal.write(df, "a")
+        assert dal.available_profiles("b") == ()
+        assert dal.available_profiles("a", "b") == ()
+
+    def test_lists_nested_profiles(self, dal, df):
+        for keys in [("b",), ("a", "x"), ("a", "y", "z"), ("a", "y", "z", "deeper")]:
+            dal.write(df, *keys)
+        assert dal.available_profiles() == (
+            ("a", "x"),
+            ("a", "y", "z"),
+            ("a", "y", "z", "deeper"),
+            ("b",),
+        )
+        assert dal.available_profiles("a") == (
+            ("a", "x"),
+            ("a", "y", "z"),
+            ("a", "y", "z", "deeper"),
+        )
+        assert dal.available_profiles("a", "y") == (
+            ("a", "y", "z"),
+            ("a", "y", "z", "deeper"),
+        )
+
+    def test_includes_profile_named_by_keys(self, dal, df):
+        dal.write(df, *KEYS)
+        assert dal.available_profiles(*KEYS) == (KEYS,)
+
+    def test_keys_with_separators(self, dal, df):
+        dal.write(df, *KEYS)
+        assert dal.available_profiles("profile/sub") == (KEYS,)
+
+    def test_results_can_be_read(self, dal, df):
+        dal.write(df, *KEYS)
+        dal.write(df, "other")
+        for keys in dal.available_profiles():
+            assert_frame_equal(dal.read(*keys).collect(), df)
+
+    def test_uncommitted_write_is_not_listed(self, dal):
+        (dal.data_directory / "pending").mkdir()
+        DataManifestFile(dal.data_directory / "pending").reserve_new_data_dir()
+        assert dal.available_profiles() == ()
+
+    def test_ignores_files_and_version_dirs(self, dal, df):
+        dal.write(df, *KEYS)
+        dal.append(df, *KEYS)
+        (dal.data_directory / "stray.txt").write_text("")
+        assert dal.available_profiles() == (KEYS,)
+
+    def test_data_directory_manifest_is_not_a_profile(self, dal, df):
+        (dal.data_directory / "manifest.json").write_text("{}")
+        dal.write(df, "a")
+        assert dal.available_profiles() == (("a",),)
+
+    def test_key_that_is_a_file(self, dal):
+        (dal.data_directory / "file").write_text("")
+        assert dal.available_profiles("file") == ()
+
+    def test_invalid_keys(self, dal):
+        with pytest.raises(ValueError, match="Invalid key"):
+            dal.available_profiles("..")
+
+    def test_skips_hidden_directories(self, dal, df):
+        dal.write(df, "a")
+        ParquetDal(dal.data_directory / ".snapshot" / "hourly").write(df, "a")
+        assert dal.available_profiles() == (("a",),)
+
+    def test_skips_directories_that_are_not_valid_keys(self, dal, df):
+        dal.write(df, "a")
+        ParquetDal(dal.data_directory / "a:b").write(df, "q")
+        assert dal.available_profiles() == (("a",),)
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="'\\' separates paths")
+    def test_backslash_in_directory_name(self, dal, df):
+        dal.write(df, "a\\b")
+        assert dal.available_profiles() == (("a\\b",),)
+        assert_frame_equal(dal.read(*dal.available_profiles()[0]).collect(), df)
+
+    def test_skips_other_formats(self, dal, df):
+        dal.write(df, "parquet")
+        CsvDal(dal.data_directory).write(df, "csv")
+        assert dal.available_profiles() == (("parquet",),)
+        assert CsvDal(dal.data_directory).available_profiles() == (("csv",),)
+
+    def test_skips_corrupt_manifest(self, dal, df, caplog):
+        dal.write(df, "good")
+        dal.write(df, "bad")
+        (dal.data_directory / "bad" / "manifest.json").write_text("not json")
+        assert dal.available_profiles() == (("good",),)
+        assert any(record.levelno == logging.ERROR for record in caplog.records)
+
+    def test_skips_manifest_naming_missing_version(self, dal, df, caplog):
+        dal.write(df, "good")
+        (dal.data_directory / "bad").mkdir()
+        (dal.data_directory / "bad" / "manifest.json").write_text(
+            json.dumps({"latest_data_dir": "v3"})
+        )
+        assert dal.available_profiles() == (("good",),)
+        assert any("missing v3" in record.getMessage() for record in caplog.records)
+
+    def test_does_not_follow_symlinks(self, dal, df):
+        dal.write(df, "real", "p")
+        try:
+            (dal.data_directory / "link").symlink_to(
+                dal.data_directory / "real", target_is_directory=True
+            )
+        except OSError:
+            pytest.skip("cannot create symlinks")
+        assert dal.available_profiles() == (("real", "p"),)
+
+    @pytest.mark.skipif(
+        sys.platform == "win32" or os.geteuid() == 0,
+        reason="needs POSIX permissions and a non-root user",
+    )
+    def test_unreadable_directory_raises(self, dal, df):
+        dal.write(df, "locked", "p")
+        locked = dal.data_directory / "locked"
+        locked.chmod(0)
+        try:
+            with pytest.raises(PermissionError):
+                dal.available_profiles()
+        finally:
+            locked.chmod(stat.S_IRWXU)
+
+    def test_simple_io_lists_nested_profiles(self, tmp_path, df):
+        io = SimpleIo(tmp_path)
+        io.write(df, "shop", "orders")
+        io.write(df, "shop", "eu", "totals")
+        assert io.available_profiles("shop") == (
+            ("shop", "eu", "totals"),
+            ("shop", "orders"),
+        )
+
+    def test_protocol_subclass_without_implementation_raises(self):
+        class Partial(Dal):
+            pass
+
+        with pytest.raises(NotImplementedError, match="Partial"):
+            Partial().available_profiles()
+
+
+def is_case_insensitive(directory: Path) -> bool:
+    probe = directory / "case_probe"
+    probe.touch()
+    try:
+        return (directory / "CASE_PROBE").exists()
+    finally:
+        probe.unlink()
+
+
+class TestCaseSensitivity:
+    @pytest.mark.parametrize(
+        "keys", [("SHOP", "orders"), ("shop", "Orders"), ("Shop", "orders")]
+    )
+    def test_read_with_other_case_is_not_found(self, dal, df, keys):
+        dal.write(df, "shop", "orders")
+        with pytest.raises(ProfileNotFoundError):
+            dal.read(*keys)
+
+    def test_available_profiles_with_other_case_is_empty(self, dal, df):
+        dal.write(df, "shop", "orders")
+        assert dal.available_profiles("SHOP") == ()
+        assert dal.available_profiles("shop", "ORDERS") == ()
+        assert dal.available_profiles() == (("shop", "orders"),)
+
+    def test_listed_keys_use_case_on_disk(self, dal, df):
+        dal.write(df, "Shop", "Orders")
+        assert dal.available_profiles("Shop") == (("Shop", "Orders"),)
+
+    def test_write_with_other_case(self, dal, df):
+        dal.write(df, "shop", "orders")
+        other = pl.DataFrame({"a": [9], "b": ["z"]})
+        if is_case_insensitive(dal.data_directory):
+            with pytest.raises(ValueError, match="differ only in case"):
+                dal.write(other, "SHOP", "orders")
+            with pytest.raises(ValueError, match="differ only in case"):
+                dal.append(other, "shop", "ORDERS")
+            assert not (dal.data_directory / "shop" / "new").exists()
+            with pytest.raises(ValueError, match="differ only in case"):
+                dal.write(other, "SHOP", "new")
+            assert not (dal.data_directory / "shop" / "new").exists()
+            assert dal.available_profiles() == (("shop", "orders"),)
+        else:
+            dal.write(other, "SHOP", "orders")
+            assert dal.available_profiles() == (("SHOP", "orders"), ("shop", "orders"))
+            assert_frame_equal(dal.read("SHOP", "orders").collect(), other)
+        assert_frame_equal(dal.read("shop", "orders").collect(), df)
+
+    def test_keys_without_letters(self, dal, df):
+        dal.write(df, "2024", "01")
+        assert dal.available_profiles("2024") == (("2024", "01"),)
+        assert_frame_equal(dal.read("2024", "01").collect(), df)
+
+
+class TestMatchesCaseOnDisk:
+    """Emulate a case-insensitive file system: other-case names resolve through
+    symlinks, but listing a directory only shows the real names."""
+
+    @pytest.fixture
+    def insensitive(self, tmp_path, monkeypatch):
+        (tmp_path / "shop" / "orders").mkdir(parents=True)
+        for alias, target in [("SHOP", "shop"), ("sHOP", "shop"), ("Shop", "shop")]:
+            try:
+                (tmp_path / alias).symlink_to(
+                    tmp_path / target, target_is_directory=True
+                )
+            except OSError:
+                pytest.skip("cannot create symlinks")
+        (tmp_path / "shop" / "ORDERS").symlink_to("orders", target_is_directory=True)
+
+        def has_real_entry(directory, name):
+            entry = directory / name
+            return entry.exists() and not entry.is_symlink()
+
+        monkeypatch.setattr(_keys, "_has_entry", has_real_entry)
+        return tmp_path
+
+    @pytest.mark.parametrize(
+        ("parts", "expected"),
+        [
+            (("shop", "orders"), True),
+            (("SHOP", "orders"), False),
+            (("Shop", "orders"), False),
+            (("shop", "ORDERS"), False),
+            (("shop", "missing"), True),
+            (("missing", "orders"), True),
+        ],
+    )
+    def test_matches(self, insensitive, parts, expected):
+        assert (
+            _keys.matches_case_on_disk(insensitive, insensitive.joinpath(*parts))
+            is expected
+        )
 
 
 class TestManifest:
@@ -373,7 +634,6 @@ class TestManifest:
         manifest = DataManifestFile(tmp_path)
         manifest.commit_data_dir(manifest.reserve_new_data_dir())
         assert visible_files(tmp_path) == ["manifest.json", "v0"]
-
 
     def test_commit_while_reading(self, tmp_path):
         """Readers must not make a commit fail, which Windows can do by locking files."""

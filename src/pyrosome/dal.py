@@ -15,7 +15,15 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, overload, over
 
 import polars as pl
 
+from pyrosome._keys import (
+    DATA_DIR_PATTERN,
+    MANIFEST_FILE_NAME,
+    check_key,
+    find_profile_dirs,
+    matches_case_on_disk,
+)
 from pyrosome._logging import logged_failure
+from pyrosome._schema import check_appendable
 from pyrosome.simple_file_lock import SimpleWriteLock
 
 if TYPE_CHECKING:
@@ -24,11 +32,6 @@ if TYPE_CHECKING:
 
 _logger = logging.getLogger(__name__)
 
-_DATA_DIR_PATTERN = re.compile(r"v(\d+)")
-_MANIFEST_FILE_NAME = "manifest.json"
-_KEY_SEPARATORS = re.compile(r"[\\/]")
-_INVALID_KEY_PARTS = frozenset({"", ".", ".."})
-_NON_PORTABLE_CHARS = frozenset(":\0")
 # warnings point at the caller of pyrosome, not at the module that raised them
 _PACKAGE_DIR = str(Path(__file__).parent) + os.sep
 _DATA_FILE_PATTERN = {
@@ -61,135 +64,6 @@ def get_accessor(file_ending: str) -> type[ParquetDal | CsvDal]:
         case _:
             msg = f"Invalid file ending for accessor: {file_ending!r}"
             raise ValueError(msg)
-
-
-# the range of values each numeric type holds exactly; a float holds every integer
-# up to the size of its significand
-_EXACT_RANGES: Final[dict[pl.DataType, tuple[int, int]]] = {
-    **{
-        dtype: (-(1 << (bits - 1)), (1 << (bits - 1)) - 1)
-        for dtype, bits in (
-            (pl.Int8(), 8),
-            (pl.Int16(), 16),
-            (pl.Int32(), 32),
-            (pl.Int64(), 64),
-            (pl.Int128(), 128),
-        )
-    },
-    **{
-        dtype: (0, (1 << bits) - 1)
-        for dtype, bits in (
-            (pl.UInt8(), 8),
-            (pl.UInt16(), 16),
-            (pl.UInt32(), 32),
-            (pl.UInt64(), 64),
-        )
-    },
-    pl.Float32(): (-(1 << 24), 1 << 24),
-    pl.Float64(): (-(1 << 53), 1 << 53),
-}
-_FLOATS: Final[frozenset[pl.DataType]] = frozenset({pl.Float32(), pl.Float64()})
-
-
-def _is_lossless_cast(source: pl.DataType, target: pl.DataType) -> bool:
-    """Check that casting from source to target keeps every value exactly.
-
-    Only identical types and widenings are lossless: an integer to a wider integer
-    (or to a float that represents it exactly), a float to a wider float, or an
-    all-null column to anything. Floats never cast losslessly to integers.
-
-    Args:
-        source: The type of the new data.
-        target: The type of the existing data.
-
-    Returns:
-        Whether every value of source is the same value in target.
-    """
-    if source in {target, pl.Null()}:
-        return True
-    source_range = _EXACT_RANGES.get(source)
-    target_range = _EXACT_RANGES.get(target)
-    if source_range is None or target_range is None:
-        return False
-    if source in _FLOATS and target not in _FLOATS:
-        return False
-    return target_range[0] <= source_range[0] and source_range[1] <= target_range[1]
-
-
-def _check_appendable(
-    new: pl.Schema, existing: pl.Schema, keys: tuple[str, ...]
-) -> None:
-    """Check that data with the new schema can be appended to the existing schema.
-
-    The columns must be the same, in any order, and every column's type must be the
-    existing type or one that casts to it without losing values.
-
-    Args:
-        new: The schema of the data to append.
-        existing: The schema of the data already stored.
-        keys: Path components naming the profile, for the error message.
-
-    Returns:
-        None.
-
-    Raises:
-        ValueError: If the columns differ, or a column's type cannot be cast to the
-            existing type without losing values.
-    """
-    if set(new.names()) != set(existing.names()):
-        msg = (
-            f"Columns {sorted(new.names())} do not match existing columns "
-            f"{existing.names()} for {keys}"
-        )
-        raise ValueError(msg)
-    if casts := {
-        name: f"{new[name]} -> {dtype}"
-        for name, dtype in existing.items()
-        if new[name] != dtype
-    }:
-        _logger.debug("Appending to %s needs casts %s", keys, casts)
-    if mismatched := {
-        name: f"{new[name]} into {dtype}"
-        for name, dtype in existing.items()
-        if not _is_lossless_cast(new[name], dtype)
-    }:
-        msg = (
-            f"Column types do not match the existing types for {keys}: {mismatched}. "
-            "Cast them explicitly before appending."
-        )
-        raise ValueError(msg)
-
-
-def _check_key(key: str) -> None:
-    """Check that a key is a safe path, made of components that name no other file.
-
-    A key may hold several path components, like ``"sales/orders"``.
-
-    Args:
-        key: The key to check.
-
-    Returns:
-        None.
-
-    Raises:
-        ValueError: If a component of the key is empty, ``.`` or ``..``, would be
-            mistaken for a version directory or the manifest, or contains a character
-            that is not portable across file systems.
-    """
-    # re.split is typed as returning `str | Any`
-    for part in cast("list[str]", _KEY_SEPARATORS.split(key)):
-        if part in _INVALID_KEY_PARTS:
-            reason = "empty, '.' and '..' path components are not allowed"
-        elif (
-            _DATA_DIR_PATTERN.fullmatch(part) is not None or part == _MANIFEST_FILE_NAME
-        ):
-            reason = f"{part!r} is reserved for the files pyrosome stores"
-        elif not _NON_PORTABLE_CHARS.isdisjoint(part):
-            reason = "':' and NUL are not allowed"
-        else:
-            continue
-        msg = f"Invalid key {key!r}: {reason}"
-        raise ValueError(msg)
 
 
 def _tmp_path(directory: Path, suffix: str) -> Path:
@@ -386,6 +260,24 @@ class Dal(Protocol):
         """
         ...
 
+    def available_profiles(self, *keys: str) -> tuple[tuple[str, ...], ...]:
+        """List the keys of every profile at or below keys that `read` can read.
+
+        Args:
+            *keys: Path components to look below, case sensitive on every
+                platform. With no keys, every profile. If keys name a profile, it
+                is included.
+
+        Returns:
+            The full keys of each profile, sorted, including those nested in
+            directories that group profiles and in other profiles.
+
+        Raises:
+            NotImplementedError: If the class does not implement listing.
+        """
+        msg = f"{type(self).__name__} does not implement available_profiles"
+        raise NotImplementedError(msg)
+
 
 class _FileDal(Dal):
     """Abstract file DAL with read/write/append for files."""
@@ -454,7 +346,8 @@ class _FileDal(Dal):
             A lazy scan over every data file in the latest version.
 
         Raises:
-            ProfileNotFoundError: If there is no data for keys.
+            ProfileNotFoundError: If there is no data for keys, including when a
+                directory on disk differs from keys only in case.
             FileNotFoundError: If the manifest names a missing version directory.
             ValueError: If there are no keys, a key is invalid or leads outside the
                 data directory, or the profile's manifest file is corrupt.
@@ -487,8 +380,9 @@ class _FileDal(Dal):
 
         Raises:
             ValueError: If there are no keys, a key is invalid or leads outside the
-                data directory, or the profile's manifest file is corrupt or names an
-                invalid version.
+                data directory, the keys differ only in case from an existing
+                directory on a case-insensitive file system, or the profile's
+                manifest file is corrupt or names an invalid version.
             pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
                 the manifest lock for longer than
                 `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
@@ -499,7 +393,10 @@ class _FileDal(Dal):
         """
         _logger.debug("Writing new version of %s", keys)
         profile_dir = self.get_profile_dir(*keys)
+        self._check_case_for_write(profile_dir, keys)
         profile_dir.mkdir(parents=True, exist_ok=True)
+        # another writer may have created a directory with different case meanwhile
+        self._check_case_for_write(profile_dir, keys)
         manifest = DataManifestFile(profile_dir)
         output_dir = manifest.reserve_new_data_dir()
         if isinstance(data, pl.DataFrame):
@@ -549,6 +446,7 @@ class _FileDal(Dal):
         """
         _logger.debug("Appending to %s", keys)
         if not (latest_data := self._get_latest_profile_data_paths(*keys)):
+            self._check_case_for_write(self.get_profile_dir(*keys), keys)
             msg = f"Appending to empty data for {keys}. Writing instead"
             warnings.warn(msg, stacklevel=2, skip_file_prefixes=(_PACKAGE_DIR,))
             return self.write(data, *keys)
@@ -556,7 +454,7 @@ class _FileDal(Dal):
         if isinstance(data, pl.DataFrame):
             data = data.lazy()
         existing_schema = self._scan(list(latest_data)).collect_schema()
-        _check_appendable(data.collect_schema(), existing_schema, keys)
+        check_appendable(data.collect_schema(), existing_schema, keys)
         data = data.select(existing_schema.names()).cast(existing_schema)
 
         data_dir = latest_data[0].parent
@@ -617,6 +515,122 @@ class _FileDal(Dal):
         _logger.debug("Moved %s to %s", tmp_file.name, published)
         return published
 
+    @override
+    def available_profiles(self, *keys: str) -> tuple[tuple[str, ...], ...]:
+        """List the keys of every profile at or below keys that `read` can read.
+
+        A profile is listed when its manifest names a version holding files of
+        this format, so each result can be passed straight to `read`, profiles
+        written by a DAL with another format are not listed, and a write that is
+        still in progress is only listed once it has committed. Profiles with a
+        corrupt manifest, or one naming a missing version, are logged and skipped.
+
+        Hidden directories (such as NFS ``.snapshot`` directories), directories
+        whose names are not valid keys, and symlinked directories below keys are
+        not searched. Keys holding several path components, like ``"a/b"``, are
+        listed as separate components. Keys are case sensitive on every platform,
+        so a key differing only in case from a directory on disk matches nothing.
+
+        Example:
+            >>> from pathlib import Path
+            >>> import polars as pl
+            >>> from pyrosome import ParquetDal
+            >>> dal = ParquetDal(Path("data"))
+            >>> df = pl.DataFrame({"x": [1]})
+            >>> for keys in [("shop", "orders"), ("shop", "eu", "totals"), ("misc",)]:
+            ...     _ = dal.write(df, *keys)
+            >>> dal.available_profiles("shop")
+            (('shop', 'eu', 'totals'), ('shop', 'orders'))
+            >>> dal.available_profiles()
+            (('misc',), ('shop', 'eu', 'totals'), ('shop', 'orders'))
+            >>> dal.available_profiles("missing")
+            ()
+
+        Args:
+            *keys: Path components to look below. With no keys, every profile in
+                the data directory. If keys name a profile, it is included.
+
+        Returns:
+            The full keys of each profile, as path components, sorted. Empty if
+            nothing exists below keys.
+
+        Raises:
+            ValueError: If a key is invalid or the keys lead outside the data
+                directory.
+            OSError: If a directory cannot be listed, for any reason other than
+                not existing, such as missing permissions.
+        """
+        root = self.get_profile_dir(*keys) if keys else self.data_directory
+        if not matches_case_on_disk(self.data_directory, root):
+            _logger.debug("No profiles below %s: a directory differs in case", keys)
+            return ()
+        found = sorted(
+            directory.relative_to(self.data_directory).parts
+            for directory in find_profile_dirs(root)
+            if directory != self.data_directory and self._has_data(directory)
+        )
+        _logger.debug("Found %d profile(s) at or below %s", len(found), root)
+        return tuple(found)
+
+    def _has_data(self, profile_dir: Path) -> bool:
+        """Check whether the latest version of a profile has files of this format.
+
+        Args:
+            profile_dir: The profile directory, holding a manifest.
+
+        Returns:
+            Whether `read` would find data files, False if the manifest is corrupt
+            or names a missing version.
+
+        Raises:
+            OSError: If the manifest or the version directory cannot be read.
+        """
+        try:
+            latest_dir = DataManifestFile(profile_dir).get_latest_data_dir()
+        except ValueError:
+            # reading the manifest already logged why it is corrupt
+            _logger.debug("Not listing %s: its manifest is corrupt", profile_dir)
+            return False
+        try:
+            data_files = _data_files(latest_dir, self.extension)
+        except FileNotFoundError:
+            _logger.exception(
+                "Not listing %s: its manifest names missing %s",
+                profile_dir,
+                latest_dir.name,
+            )
+            return False
+        if not data_files:
+            _logger.debug(
+                "Not listing %s: %s has no .%s files",
+                profile_dir,
+                latest_dir.name,
+                self.extension,
+            )
+        return bool(data_files)
+
+    def _check_case_for_write(self, profile_dir: Path, keys: tuple[str, ...]) -> None:
+        """Refuse to write to a directory whose name differs from keys only in case.
+
+        Args:
+            profile_dir: The profile directory named by keys.
+            keys: Path components naming the profile, for the error message.
+
+        Returns:
+            None.
+
+        Raises:
+            ValueError: If an existing directory differs from keys only in case.
+            OSError: If a directory cannot be listed to check its case.
+        """
+        if not matches_case_on_disk(self.data_directory, profile_dir):
+            msg = (
+                f"Keys {keys} differ only in case from an existing directory in "
+                f"{self.data_directory}. Keys are case sensitive, but this file "
+                "system is not, so it cannot hold both."
+            )
+            raise ValueError(msg)
+
     def get_profile_dir(self, *keys: str) -> Path:
         """Get path to the profile directory described by keys.
 
@@ -634,7 +648,7 @@ class _FileDal(Dal):
             msg = "At least one key is required"
             raise ValueError(msg)
         for key in keys:
-            _check_key(key)
+            check_key(key)
         profile_dir = self.data_directory.joinpath(*keys)
         # check that the profile directory is within the data directory
         if not profile_dir.resolve().is_relative_to(self.data_directory.resolve()):
@@ -652,13 +666,19 @@ class _FileDal(Dal):
             *keys: Path components naming the profile.
 
         Returns:
-            The latest version directory, or None if nothing exists yet.
+            The latest version directory, or None if nothing exists yet, including
+            when a directory on disk differs from keys only in case.
 
         Raises:
             ValueError: If there are no keys, a key is invalid, the keys lead outside
                 the data directory, or the profile's manifest file is corrupt.
+            OSError: If a directory cannot be listed to check its case.
         """
-        manifest_file = DataManifestFile(self.get_profile_dir(*keys))
+        profile_dir = self.get_profile_dir(*keys)
+        if not matches_case_on_disk(self.data_directory, profile_dir):
+            _logger.debug("No profile %s: a directory differs in case", keys)
+            return None
+        manifest_file = DataManifestFile(profile_dir)
         try:
             return manifest_file.get_latest_data_dir()
         except FileNotFoundError:
@@ -802,7 +822,7 @@ class DataManifestFile:
     profile_path: Path
     """Path to the profile directory."""
 
-    MANIFEST_FILE_NAME: Final[str] = _MANIFEST_FILE_NAME
+    MANIFEST_FILE_NAME: Final[str] = MANIFEST_FILE_NAME
     """Name of the manifest file inside the profile directory."""
 
     LOCK_TIMEOUT: Final[float] = 10.0
@@ -855,7 +875,7 @@ class DataManifestFile:
         existing = [
             int(match.group(1))
             for path in self.profile_path.iterdir()
-            if path.is_dir() and (match := _DATA_DIR_PATTERN.fullmatch(path.name))
+            if path.is_dir() and (match := DATA_DIR_PATTERN.fullmatch(path.name))
         ]
         next_dir_idx = max(existing, default=-1) + 1
         idx = _claim_first_free(
@@ -922,7 +942,7 @@ class DataManifestFile:
         Raises:
             ValueError: If name is not a valid data directory name.
         """
-        if (match := _DATA_DIR_PATTERN.fullmatch(name)) is None:
+        if (match := DATA_DIR_PATTERN.fullmatch(name)) is None:
             msg = f"Invalid data directory name {name!r} for {self.manifest_path}"
             raise ValueError(msg)
         return int(match.group(1))
@@ -943,9 +963,7 @@ class DataManifestFile:
         with logged_failure(_logger, "Manifest file %s is corrupt", self.manifest_path):
             manifest = cast("object", json.loads(text))
         match manifest:
-            case {"latest_data_dir": str() as name} if _DATA_DIR_PATTERN.fullmatch(
-                name
-            ):
+            case {"latest_data_dir": str() as name} if DATA_DIR_PATTERN.fullmatch(name):
                 return name
             case _:
                 msg = (

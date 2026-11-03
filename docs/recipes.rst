@@ -157,15 +157,20 @@ Combine several profiles
 ------------------------
 
 Use keys to split data, for example by region, then concatenate the lazy frames
-to query them together.
+to query them together. `~pyrosome.ParquetDal.available_profiles` lists the keys of
+every profile at or below some keys, at any depth, so keep only those one level
+down.
 
 .. doctest::
 
    >>> for region, total in [("eu", 10.0), ("us", 4.5)]:
    ...     _ = dal.write(pl.DataFrame({"total": [total]}), "sales", region)
+   >>> dal.available_profiles("sales")
+   (('sales', 'eu'), ('sales', 'us'))
    >>> combined = pl.concat(
-   ...     dal.read("sales", region).with_columns(region=pl.lit(region))
-   ...     for region in ["eu", "us"]
+   ...     dal.read(*keys).with_columns(region=pl.lit(keys[-1]))
+   ...     for keys in dal.available_profiles("sales")
+   ...     if len(keys) == 2
    ... )
    >>> combined.collect().sort("region")["region"].to_list()
    ['eu', 'us']

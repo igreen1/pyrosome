@@ -63,9 +63,10 @@ Keys
 
 Keys are path components, so ``dal.write(df, "sales", "orders")`` and
 ``dal.write(df, "sales/orders")`` name the same profile. At least one key is
-required. Keys that are empty, ``"."`` or ``".."``, contain ``":"`` or NUL, or name
-a version (``"v0"``) or ``"manifest.json"`` would collide with the files pyrosome
-stores or leave the data directory, so they raise `ValueError`.
+required. Keys that are empty, ``"."`` or ``".."``, hidden (starting with
+``"."``), contain ``":"`` or NUL, or name a version (``"v0"``) or
+``"manifest.json"`` would collide with the files pyrosome stores or leave the data
+directory, so they raise `ValueError`.
 
 .. doctest::
 

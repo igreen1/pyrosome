@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, cast
 
 import polars as pl
 
-from pyrosome.dal import DataManifestFile, get_accessor
+from pyrosome.dal import get_accessor
 
 if TYPE_CHECKING:
     import os
@@ -125,12 +125,12 @@ class SimpleIo:
         """
         self.dal = get_accessor("parquet")(data_directory)
 
-    def available_profiles(self, *keys: str) -> tuple[str, ...]:
-        """List the profiles directly below keys that have been written.
+    def available_profiles(self, *keys: str) -> tuple[tuple[str, ...], ...]:
+        """List the full keys of every readable profile at or below keys.
 
-        A profile is a directory holding a manifest. Nested profiles, and
-        directories that only group other profiles, are not listed; pass their
-        path as keys to list what they hold.
+        Profiles at any depth are listed, but only those with parquet data. Keys
+        are case sensitive on every platform. See
+        `pyrosome.ParquetDal.available_profiles` for the details.
 
         Example:
             >>> from pathlib import Path
@@ -139,35 +139,24 @@ class SimpleIo:
             >>> io = SimpleIo(Path("data"))
             >>> df = pl.DataFrame({"x": [1]})
             >>> _ = io.write(df, "shop", "orders")
-            >>> _ = io.write(df, "shop", "totals")
+            >>> _ = io.write(df, "shop", "eu", "totals")
             >>> io.available_profiles("shop")
-            ('orders', 'totals')
-            >>> io.available_profiles("missing")
-            ()
+            (('shop', 'eu', 'totals'), ('shop', 'orders'))
 
         Args:
-            *keys: Path components naming the directory to look in. With no keys,
-                the data directory itself.
+            *keys: Path components to look below. With no keys, every profile in
+                the data directory. If keys name a profile, it is included.
 
         Returns:
-            The names of the profiles below keys, sorted. Empty if the directory
-            doesn't exist.
+            The full keys of each profile, as path components, sorted.
 
         Raises:
             ValueError: If a key is invalid or the keys lead outside the data
                 directory.
-            OSError: If the directory cannot be listed.
+            OSError: If a directory cannot be listed, for any reason other than
+                not existing.
         """
-        directory = (
-            self.dal.data_directory if not keys else self.dal.get_profile_dir(*keys)
-        )
-        try:
-            children = tuple(directory.iterdir())
-        except FileNotFoundError, NotADirectoryError:
-            return ()
-        return tuple(
-            sorted(child.name for child in children if DataManifestFile(child).exists())
-        )
+        return self.dal.available_profiles(*keys)
 
     def read(self, /, *keys: str, **filters: FilterValue) -> pl.LazyFrame:
         """Read a lazy frame, keeping only rows where each column equals a value.
