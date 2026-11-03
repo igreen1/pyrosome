@@ -96,7 +96,7 @@ Versions
 
 Versions are never modified by `~pyrosome.ParquetDal.write`. That makes rollbacks and
 audits simple, but the data directory grows with every write until old versions
-are removed. See :ref:`recipe-prune`.
+are removed with `~pyrosome.ParquetDal.prune`. See :ref:`recipe-prune`.
 
 Each version can have its own schema. Within a version, every appended file must
 have the same column names as the existing data, and column types that cast to the
@@ -109,6 +109,19 @@ appended to an integer column raises `ValueError` instead of being truncated.
    Traceback (most recent call last):
    ...
    ValueError: Columns ['name'] do not match existing columns ['id'] for ('sales', 'orders')
+
+A column whose values are all null has type ``Null``, which can't hold anything
+else. Writes store such columns as ``String`` instead, so later appends can fill
+them in:
+
+.. doctest::
+
+   >>> _ = dal.write(pl.DataFrame({"id": [5], "note": [None]}), "sales", "notes")
+   >>> dal.read("sales", "notes").collect_schema()
+   Schema({'id': Int64, 'note': String})
+   >>> _ = dal.append(pl.DataFrame({"id": [6], "note": ["late"]}), "sales", "notes")
+   >>> dal.read("sales", "notes").collect()["note"].to_list()
+   [None, 'late']
 
 Safety with several processes
 -----------------------------
@@ -130,10 +143,45 @@ a lower priority:
   new version once its data is complete.
 * **The manifest never moves backwards.** If two writes finish out of order, the
   manifest keeps pointing at the higher version.
+* **Appends never vanish silently.** An append adds its file to the version that
+  was latest when it started. If another process commits a newer version before
+  the file is in place, readers won't see it, so
+  `~pyrosome.ParquetDal.append` raises `~pyrosome.dal.SupersededAppendError`
+  instead of returning. Append the same data again to add it to the new version.
+* **The first appends to a new profile all land in** ``v0``. One of them writes
+  ``v0``, and the others wait up to
+  `~pyrosome.ParquetDal.FIRST_COMMIT_TIMEOUT` seconds for it, then append to it.
+* **Failures clean up after themselves.** If a write or append raises, its
+  temporary file and, for a write, its uncommitted version are deleted. A process
+  that is killed can't clean up; `~pyrosome.ParquetDal.vacuum` removes what it
+  left behind.
 
-Manifest updates take a short lock, the ``manifest.json.write_lock`` file. A
-writer waits up to `~pyrosome.dal.DataManifestFile.LOCK_TIMEOUT` seconds for it
-before raising `~pyrosome.simple_file_lock.FileAlreadyLockedError`.
+Manifest updates take a short lock, the ``manifest.json.write_lock`` file, which
+names the host and process holding it and when it was taken. A writer waits up
+to `~pyrosome.dal.DataManifestFile.LOCK_TIMEOUT` seconds for it before raising
+`~pyrosome.simple_file_lock.FileAlreadyLockedError`. Updating the manifest takes
+milliseconds, so a lock older than
+`~pyrosome.dal.DataManifestFile.LOCK_STALE_AFTER` seconds was left by a process
+that died, and the next writer deletes it.
+
+Compaction and rollback
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Compacting a profile, or rolling it back to an older version, reads one version
+and writes the result as a new version. Appends to the old version that finish
+while that runs would be left behind in it:
+
+* `~pyrosome.ParquetDal.compact` checks, while committing, that nothing was
+  appended since it read the data. If something was, it discards its new version
+  and starts again, so appends made while compacting are never lost.
+* A rollback written with `~pyrosome.ParquetDal.write` (see
+  :ref:`recipe-rollback`) discards on purpose the appends that finish before it
+  commits. Appends that finish after it commits raise
+  `~pyrosome.dal.SupersededAppendError`, so they can be retried against the
+  rolled-back data.
+
+This only applies to writes that rebuild a profile from its own data. A write of
+new data, such as a full refresh, replaces the profile whatever was appended.
 
 These guarantees are covered by the multi-process tests in ``tests/``, and
 :ref:`recipe-parallel` shows them in use.
@@ -141,9 +189,16 @@ These guarantees are covered by the multi-process tests in ``tests/``, and
 Limitations
 -----------
 
-* **Stale locks are not cleaned up.** If a process is killed while holding the
-  manifest lock, writes to that profile fail until the lock file is deleted. See
+* **Stale locks block writes for two minutes.** If a process is killed while
+  holding the manifest lock, writes to that profile fail until the lock is
+  `~pyrosome.dal.DataManifestFile.LOCK_STALE_AFTER` seconds old and is broken. A
+  lock's age is measured with the clock of the host that took it, so hosts
+  sharing a data directory need roughly synchronised clocks. See
   :ref:`recipe-stale-lock`.
+* **A narrow race remains when compacting.** An append that publishes its file
+  and checks the manifest within the few milliseconds between
+  `~pyrosome.ParquetDal.compact` checking for appends and committing its new
+  version returns normally, but its file stays in the old version.
 * **Exclusive file creation is required** for `~pyrosome.ParquetDal.append`. Local
   disks, SMB and NFSv3 or later support it; NFSv2 does not.
 * **Don't mix formats in one profile.** `~pyrosome.ParquetDal` and

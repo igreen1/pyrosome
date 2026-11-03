@@ -4,6 +4,7 @@ import logging
 from typing import Final
 
 import polars as pl
+import polars.selectors as cs
 
 _logger = logging.getLogger(__name__)
 
@@ -102,3 +103,18 @@ def check_appendable(
             "Cast them explicitly before appending."
         )
         raise ValueError(msg)
+
+
+def promote_null_columns(data: pl.LazyFrame) -> pl.LazyFrame:
+    """Store all-null columns as strings, so that later appends can fill them.
+
+    A column whose type is ``Null`` can only ever hold nulls, so appending any
+    value to it would be rejected.
+
+    Args:
+        data: The data to write.
+
+    Returns:
+        The data with every ``Null`` column cast to ``String``.
+    """
+    return data.with_columns(cs.by_dtype(pl.Null).cast(pl.String))

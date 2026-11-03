@@ -13,7 +13,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-from pyrosome import _keys
+from pyrosome import _files, _keys
 from pyrosome.api import SimpleIo
 from pyrosome.dal import CsvDal, Dal, DataManifestFile, ParquetDal, ProfileNotFoundError
 from pyrosome.simple_file_lock import FileAlreadyLockedError, SimpleWriteLock
@@ -247,7 +247,7 @@ class TestAppend:
         tmp_file = output_dir / ".tmp.parquet.tmp"
         df.write_parquet(tmp_file)
         assert (
-            dal._publish_append_file(tmp_file, latest_data) == output_dir / "2.parquet"
+            _files.publish_append_file(tmp_file, latest_data, "parquet") == output_dir / "2.parquet"
         )
 
     def test_append_cleans_up_tmp_file(self, dal, df):
@@ -435,9 +435,21 @@ class TestAvailableProfiles:
         ParquetDal(dal.data_directory / ".snapshot" / "hourly").write(df, "a")
         assert dal.available_profiles() == (("a",),)
 
-    def test_skips_directories_that_are_not_valid_keys(self, dal, df):
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "v3",
+            pytest.param(
+                "a:b",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32", reason="':' is not allowed in names"
+                ),
+            ),
+        ],
+    )
+    def test_skips_directories_that_are_not_valid_keys(self, dal, df, name):
         dal.write(df, "a")
-        ParquetDal(dal.data_directory / "a:b").write(df, "q")
+        ParquetDal(dal.data_directory / name).write(df, "q")
         assert dal.available_profiles() == (("a",),)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="'\\' separates paths")
@@ -748,7 +760,7 @@ class TestLogging:
         assert record.levelno == logging.ERROR
         assert record.exc_info is not None
         assert record.getMessage().startswith(f"Failed to write {KEYS}")
-        assert "left uncommitted" in record.getMessage()
+        assert "version is removed" in record.getMessage()
 
     def test_failed_append_logs_exception(self, dal, df, monkeypatch, caplog):
         dal.write(df, *KEYS)

@@ -40,7 +40,9 @@ file, so a failed batch never damages earlier ones.
    ['start', 'click', 'click', 'stop']
 
 To start a profile that may not exist yet, `~pyrosome.ParquetDal.append` falls back
-to a write and warns. Write the first batch explicitly to avoid the warning.
+to a write and warns. Write the first batch explicitly to avoid the warning. This
+is safe from several processes at once: the first append writes ``v0`` and the
+others append to it.
 
 Query without loading everything
 --------------------------------
@@ -175,19 +177,26 @@ down.
    >>> combined.collect().sort("region")["region"].to_list()
    ['eu', 'us']
 
+.. _recipe-compact:
+
 Compact many small appends
 --------------------------
 
-Many small appended files make reads slower. Rewrite the profile as a new
-version with one file. The lazy read streams straight into the new version.
+Many small appended files make reads slower.
+`~pyrosome.ParquetDal.compact` rewrites the latest version as a new version with
+one file, streaming the data rather than loading it all.
 
 .. doctest::
 
-   >>> compacted = dal.write(dal.read("events"), "events")
+   >>> compacted = dal.compact("events")
    >>> sorted(path.name for path in compacted.iterdir())
    ['0.parquet']
    >>> dal.read("events").collect().height
    4
+
+It is safe to compact while other processes append: if anything is appended
+while compacting, the new version is discarded and compacting starts again.
+Avoid ``dal.write(dal.read(...))`` for this, which would lose those appends.
 
 Change the schema
 -----------------
@@ -219,6 +228,8 @@ Old versions are plain directories, so scan them directly.
    >>> pl.scan_parquet(profile_dir / "v0" / "*.parquet").collect().height
    3
 
+.. _recipe-rollback:
+
 Roll back to an older version
 -----------------------------
 
@@ -231,38 +242,50 @@ can itself be undone.
    >>> dal.read("inventory").collect().height
    3
 
+Rolling back discards everything appended to the latest version, including
+appends from other processes that finish before the rollback commits. Appends
+that finish after it raise `~pyrosome.dal.SupersededAppendError`; see
+:ref:`recipe-parallel` for retrying them.
+
 .. _recipe-prune:
 
 Remove old versions
 -------------------
 
-Delete version directories older than the last few. Only do this when no reader
-can still be using them, since a lazy frame from an earlier
-`~pyrosome.ParquetDal.read` fails if its files disappear.
+`~pyrosome.ParquetDal.prune` deletes the versions older than the last few. Only
+do this when no reader can still be using them, since a lazy frame from an
+earlier `~pyrosome.ParquetDal.read` fails if its files disappear.
 
 .. doctest::
 
-   >>> import shutil
-   >>> import stat
-   >>> from pyrosome.dal import DataManifestFile
-   >>> def remove_read_only(remove, path, _error):
-   ...     # data files are read only, and Windows can't delete read-only files
-   ...     Path(path).chmod(stat.S_IWRITE)
-   ...     remove(path)
-   >>> def prune(dal, *keys, keep=2):
-   ...     profile_dir = dal.data_directory.joinpath(*keys)
-   ...     latest = DataManifestFile(profile_dir).get_latest_data_dir()
-   ...     oldest_kept = int(latest.name.removeprefix("v")) - keep + 1
-   ...     for version in profile_dir.glob("v*"):
-   ...         index = version.name.removeprefix("v")
-   ...         if version.is_dir() and index.isdigit() and int(index) < oldest_kept:
-   ...             shutil.rmtree(version, onexc=remove_read_only)
-   >>> prune(dal, "inventory", keep=2)
+   >>> [path.name for path in dal.prune("inventory", keep=2)]
+   ['v0']
    >>> sorted(path.name for path in profile_dir.iterdir())
    ['manifest.json', 'v1', 'v2']
 
 Versions newer than the manifest's latest are kept, because another process may
 still be writing them.
+
+.. _recipe-vacuum:
+
+Clean up after crashed processes
+--------------------------------
+
+A write or append that raises deletes its temporary files, but a process that
+is killed leaves them behind, along with versions it never committed.
+`~pyrosome.ParquetDal.vacuum` deletes those once they are older than
+``older_than`` (an hour by default), since newer ones may belong to writes still
+in progress.
+
+.. doctest::
+
+   >>> import datetime
+   >>> abandoned = profile_dir / "v3"
+   >>> abandoned.mkdir()  # reserved by a write that was killed
+   >>> dal.vacuum("inventory")
+   ()
+   >>> [path.name for path in dal.vacuum("inventory", older_than=datetime.timedelta(0))]
+   ['v3']
 
 .. _recipe-parallel:
 
@@ -283,6 +306,25 @@ Running it prints:
 .. code-block:: text
 
    99 batches appended as 99 files, 100 rows
+
+If another process may write a new version of the profile at the same time,
+such as a rollback, an append can raise `~pyrosome.dal.SupersededAppendError`:
+its file went into the version that was replaced. Append the same data again to
+add it to the new version.
+
+.. doctest::
+
+   >>> from pyrosome.dal import SupersededAppendError
+   >>> def append_to_latest(dal, data, *keys, attempts=3):
+   ...     for attempt in range(attempts):
+   ...         try:
+   ...             return dal.append(data, *keys)
+   ...         except SupersededAppendError:
+   ...             if attempt == attempts - 1:
+   ...                 raise
+   >>> _ = dal.write(pl.DataFrame({"page": ["home"]}), "clicks")
+   >>> append_to_latest(dal, pl.DataFrame({"page": ["cart"]}), "clicks").name
+   '1.parquet'
 
 Exchange data as CSV
 --------------------
@@ -310,14 +352,16 @@ logger:
 
 - ``DEBUG``: each step of reading, writing and appending (version directories
   reserved, tmp files moved into place, manifest commits and lock waits).
-- ``INFO``: each completed write and append, each profile a
-  `~pyrosome.Dataset` calculates and caches, and writes that another process
-  superseded with a newer version before they could be committed.
+- ``INFO``: each completed write, append, compaction, prune and vacuum, each
+  profile a `~pyrosome.Dataset` calculates and caches, and writes that another
+  process superseded with a newer version before they could be committed.
+- ``WARNING``: a stale manifest lock that was broken (see
+  :ref:`recipe-stale-lock`).
 - ``ERROR``: problems with the stored data rather than with the arguments, such
   as a corrupt manifest, a manifest naming a missing version, or a lock still
   held after the timeout (see :ref:`recipe-stale-lock`). Failed writes, appends
-  and profile calculations are logged with their traceback, saying what they
-  left behind, and the exception is then raised as usual.
+  (including those superseded by a newer version) and profile calculations are
+  logged with their traceback, and the exception is then raised as usual.
 
 Invalid arguments, such as a bad key or columns that don't match, only raise.
 Nothing is shown unless you configure logging, for example:
@@ -339,17 +383,24 @@ Recover from a crashed writer
 
 If a process dies while updating a manifest, its lock file stays behind and
 later writes raise `~pyrosome.simple_file_lock.FileAlreadyLockedError` after
-`~pyrosome.dal.DataManifestFile.LOCK_TIMEOUT` seconds. Once you are sure no
-writer is running, remove the lock file.
+waiting `~pyrosome.dal.DataManifestFile.LOCK_TIMEOUT` seconds. Once the lock is
+`~pyrosome.dal.DataManifestFile.LOCK_STALE_AFTER` seconds old, the next write
+breaks it and logs a warning. The lock file says which process took it, and
+when:
 
 .. doctest::
 
+   >>> import json
    >>> from pyrosome.simple_file_lock import file_is_locked
    >>> manifest_path = data_dir / "events" / "manifest.json"
    >>> lock_file = manifest_path.with_name("manifest.json.write_lock")
-   >>> lock_file.touch()  # simulate a crashed writer
-   >>> file_is_locked(manifest_path)
-   True
-   >>> lock_file.unlink(missing_ok=True)
+   >>> crashed = {"host": "worker-3", "pid": 4242, "created": "2020-01-01T09:00:00+00:00"}
+   >>> _ = lock_file.write_text(json.dumps(crashed))  # simulate a crashed writer
+   >>> json.loads(lock_file.read_text())["host"]
+   'worker-3'
+   >>> _ = dal.write(pl.DataFrame({"event": ["start"], "ms": [0]}), "events")
    >>> file_is_locked(manifest_path)
    False
+
+To write sooner, delete the lock file once you are sure that process is no
+longer running.
