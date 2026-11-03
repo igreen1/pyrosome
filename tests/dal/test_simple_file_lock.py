@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from pyrosome import simple_file_lock
+from pyrosome.dal import DataManifestFile
 from pyrosome.simple_file_lock import (
     FileAlreadyLockedError,
     FileLockPermissionError,
@@ -184,6 +185,12 @@ def test_release_leaves_lock_taken_by_another_process(tmp_path, caplog):
         write_holder(path, seconds_ago=0)
     assert file_is_locked(path)
     assert "broken as stale" in caplog.text
+
+
+def test_manifest_lock_is_broken_after_two_minutes(tmp_path):
+    lock = DataManifestFile(tmp_path).lock()
+    assert lock.stale_after == 120
+    assert lock.timeout == DataManifestFile.LOCK_TIMEOUT
 
 
 def test_permission_error_raises_immediately(tmp_path, monkeypatch):
