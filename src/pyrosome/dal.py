@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, overload, over
 
 import polars as pl
 
+from pyrosome._logging import logged_failure
 from pyrosome.simple_file_lock import SimpleWriteLock
 
 if TYPE_CHECKING:
@@ -504,15 +505,21 @@ class _FileDal(Dal):
         if isinstance(data, pl.DataFrame):
             data = data.lazy()
         tmp_file = _tmp_path(output_dir, f".{self.extension}")
-        _logger.debug("Sinking data for %s to %s", keys, tmp_file)
-        self._sink(data, tmp_file)
-        _make_read_only(tmp_file)
-        published = output_dir / f"0.{self.extension}"
-        tmp_file.replace(published)
-        _logger.debug("Moved %s to %s", tmp_file.name, published)
-        # only point the manifest at the new version once its data is complete
-        manifest.commit_data_dir(output_dir)
-        _logger.debug("Wrote %s to %s", keys, output_dir)
+        with logged_failure(
+            _logger,
+            "Failed to write %s: %s is left uncommitted, so readers ignore it",
+            keys,
+            output_dir,
+        ):
+            _logger.debug("Sinking data for %s to %s", keys, tmp_file)
+            self._sink(data, tmp_file)
+            _make_read_only(tmp_file)
+            published = output_dir / f"0.{self.extension}"
+            tmp_file.replace(published)
+            _logger.debug("Moved %s to %s", tmp_file.name, published)
+            # only point the manifest at the new version once its data is complete
+            manifest.commit_data_dir(output_dir)
+        _logger.info("Wrote %s as %s", keys, output_dir)
         return output_dir
 
     @override
@@ -554,14 +561,15 @@ class _FileDal(Dal):
 
         data_dir = latest_data[0].parent
         tmp_file = _tmp_path(data_dir, f".{self.extension}")
-        _logger.debug("Sinking appended data for %s to %s", keys, tmp_file)
-        self._sink(data, tmp_file)
-        _make_read_only(tmp_file)
-        try:
-            published = self._publish_append_file(tmp_file, latest_data)
-        finally:
-            _remove_tmp_file(tmp_file)
-        _logger.debug("Appended to %s as %s", keys, published)
+        with logged_failure(_logger, "Failed to append to %s in %s", keys, data_dir):
+            _logger.debug("Sinking appended data for %s to %s", keys, tmp_file)
+            self._sink(data, tmp_file)
+            _make_read_only(tmp_file)
+            try:
+                published = self._publish_append_file(tmp_file, latest_data)
+            finally:
+                _remove_tmp_file(tmp_file)
+        _logger.info("Appended to %s as %s", keys, published)
         return published
 
     def _publish_append_file(
@@ -584,6 +592,7 @@ class _FileDal(Dal):
         parent_dirs = {file.parent for file in latest_data}
         if len(parent_dirs) > 1:
             msg = f"Latest data spans multiple directories: {sorted(parent_dirs)}"
+            _logger.error(msg)
             raise RuntimeError(msg)
         data_dir = parent_dirs.pop()
         next_idx = max(_data_file_index(file) for file in latest_data) + 1
@@ -673,7 +682,8 @@ class _FileDal(Dal):
         """
         if (latest_dir := self._get_latest_profile_version(*keys)) is None:
             return ()
-        return _data_files(latest_dir, extension=self.extension)
+        with logged_failure(_logger, "Cannot list version %s of %s", latest_dir, keys):
+            return _data_files(latest_dir, extension=self.extension)
 
 
 class ParquetDal(_FileDal):
@@ -885,7 +895,7 @@ class DataManifestFile:
                 current_name is not None
                 and self._data_dir_index(current_name) >= new_idx
             ):
-                _logger.debug(
+                _logger.info(
                     "Not committing %s: manifest %s already points at newer %s",
                     data_dir.name,
                     self.manifest_path,
@@ -925,11 +935,14 @@ class DataManifestFile:
 
         Raises:
             FileNotFoundError: If the manifest file does not exist.
-            ValueError: If the manifest file has no valid latest data directory, or is
-                not valid JSON (`json.JSONDecodeError`).
+            json.JSONDecodeError: If the manifest file is not valid JSON.
+            ValueError: If the manifest file has no valid latest data directory.
         """
         # writes replace the file atomically, so no lock is needed to read it
-        match cast("object", json.loads(self.manifest_path.read_text())):
+        text = self.manifest_path.read_text()
+        with logged_failure(_logger, "Manifest file %s is corrupt", self.manifest_path):
+            manifest = cast("object", json.loads(text))
+        match manifest:
             case {"latest_data_dir": str() as name} if _DATA_DIR_PATTERN.fullmatch(
                 name
             ):
@@ -939,6 +952,7 @@ class DataManifestFile:
                     f"Manifest file {self.manifest_path} is corrupt: "
                     "missing or invalid 'latest_data_dir'."
                 )
+                _logger.error(msg)
                 raise ValueError(msg)
 
     def _write(self, latest_data_dir: str) -> None:

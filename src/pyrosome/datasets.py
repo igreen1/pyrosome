@@ -4,6 +4,7 @@ import contextlib
 import logging
 from typing import TYPE_CHECKING, Self, cast
 
+from pyrosome._logging import logged_failure
 from pyrosome.dal import ProfileNotFoundError
 
 if TYPE_CHECKING:
@@ -191,7 +192,17 @@ class Dataset:
             "_".join(keys),
         )
         # calculate from every row, not just this dataset's subset
-        self._store.write(calc_fn(self.without_filters()), *self.keys, *keys)
+        with logged_failure(
+            _logger,
+            "%s._calc_%s failed to calculate profile %s of %s",
+            type(self).__name__,
+            "_".join(keys),
+            keys,
+            self.keys,
+        ):
+            data = calc_fn(self.without_filters())
+        output_dir = self._store.write(data, *self.keys, *keys)
+        _logger.info("Cached profile %s of %s in %s", keys, self.keys, output_dir)
 
     def without_filters(self) -> Self:
         """Get this dataset without any filters.

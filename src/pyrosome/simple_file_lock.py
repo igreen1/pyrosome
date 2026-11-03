@@ -10,6 +10,8 @@ import math
 import time
 from typing import TYPE_CHECKING, Self
 
+from pyrosome._logging import logged_failure
+
 if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
@@ -106,8 +108,12 @@ class SimpleWriteLock:
                     self.lock_path,
                     self.timeout,
                 )
-        _logger.debug(
-            "Gave up on lock %s after %d attempt(s)", self.lock_path, attempts
+        _logger.error(
+            "Gave up on lock %s after %d attempt(s) over %ss. If no other process is "
+            "writing, it was left by a crashed process and can be deleted",
+            self.lock_path,
+            attempts,
+            self.timeout,
         )
         raise FileAlreadyLockedError(self.path)
 
@@ -133,7 +139,13 @@ class SimpleWriteLock:
         """
         del exc_type, exc_value, traceback
         if self.locked:
-            self.lock_path.unlink()
+            with logged_failure(
+                _logger,
+                "Cannot release lock %s: other processes wait for it until it is "
+                "deleted",
+                self.lock_path,
+            ):
+                self.lock_path.unlink()
             self.locked = False
             _logger.debug("Released lock %s", self.lock_path)
 
@@ -154,6 +166,7 @@ class SimpleWriteLock:
         except FileExistsError:
             return False
         except PermissionError as e:
+            _logger.exception("No permission to create lock %s", self.lock_path)
             raise FileLockPermissionError(self.path) from e
         self.locked = True
         return True
