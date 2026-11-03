@@ -435,9 +435,21 @@ class TestAvailableProfiles:
         ParquetDal(dal.data_directory / ".snapshot" / "hourly").write(df, "a")
         assert dal.available_profiles() == (("a",),)
 
-    def test_skips_directories_that_are_not_valid_keys(self, dal, df):
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "v3",
+            pytest.param(
+                "a:b",
+                marks=pytest.mark.skipif(
+                    sys.platform == "win32", reason="':' is not allowed in names"
+                ),
+            ),
+        ],
+    )
+    def test_skips_directories_that_are_not_valid_keys(self, dal, df, name):
         dal.write(df, "a")
-        ParquetDal(dal.data_directory / "a:b").write(df, "q")
+        ParquetDal(dal.data_directory / name).write(df, "q")
         assert dal.available_profiles() == (("a",),)
 
     @pytest.mark.skipif(sys.platform == "win32", reason="'\\' separates paths")

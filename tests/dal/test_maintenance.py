@@ -14,6 +14,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
+from pyrosome import _files
 from pyrosome.dal import (
     CsvDal,
     DataManifestFile,
@@ -459,3 +460,61 @@ def test_commit_while_other_processes_read(tmp_path):
     assert [errors for _, errors in results] == [[]] * len(readers)
     assert all(reads > 0 for reads, _ in results)
     assert manifest.get_latest_data_dir() == profile_dir / "v300"
+
+
+class TestRetryWhileInUse:
+    """Windows refuses to replace or open a file another process has open."""
+
+    @pytest.fixture(autouse=True)
+    def on_windows(self, monkeypatch):
+        monkeypatch.setattr(_files, "IN_USE_MEANS_RETRY", True)
+        monkeypatch.setattr(_files, "IN_USE_POLL_INTERVAL", 0.001)
+
+    @staticmethod
+    def fails(times):
+        calls = []
+
+        def action():
+            calls.append(None)
+            if len(calls) <= times:
+                raise PermissionError
+            return len(calls)
+
+        return action
+
+    def test_retries_until_the_file_is_free(self, tmp_path):
+        assert _files.retry_while_in_use(self.fails(3), tmp_path) == 4
+
+    def test_gives_up_after_the_timeout(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_files, "IN_USE_TIMEOUT", 0.01)
+        with pytest.raises(PermissionError):
+            _files.retry_while_in_use(self.fails(1000), tmp_path)
+
+    def test_other_errors_are_not_retried(self, tmp_path):
+        def action():
+            raise FileNotFoundError
+
+        with pytest.raises(FileNotFoundError):
+            _files.retry_while_in_use(action, tmp_path)
+
+    def test_not_retried_elsewhere(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(_files, "IN_USE_MEANS_RETRY", False)
+        with pytest.raises(PermissionError):
+            _files.retry_while_in_use(self.fails(1), tmp_path)
+
+    def test_commit_retries_a_refused_replace(self, tmp_path, monkeypatch):
+        manifest = DataManifestFile(tmp_path)
+        manifest.commit_data_dir(manifest.reserve_new_data_dir())
+        replace = Path.replace
+        refusals = []
+
+        def refuse_twice(self, target):
+            if Path(target).name == "manifest.json" and len(refusals) < 2:
+                refusals.append(target)
+                raise PermissionError
+            return replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", refuse_twice)
+        manifest.commit_data_dir(manifest.reserve_new_data_dir())
+        assert len(refusals) == 2
+        assert manifest.get_latest_data_dir() == tmp_path / "v1"

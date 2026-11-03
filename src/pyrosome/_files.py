@@ -3,12 +3,15 @@
 import contextlib
 import itertools
 import logging
+import math
 import re
 import shutil
 import stat
+import sys
+import time
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from pyrosome._keys import DATA_DIR_PATTERN
 
@@ -17,6 +20,52 @@ if TYPE_CHECKING:
 
 # logged as part of pyrosome.dal, the logger users configure to see storage steps
 _logger = logging.getLogger("pyrosome.dal")
+
+_WINDOWS: Final[str] = "win32"
+
+IN_USE_MEANS_RETRY: Final[bool] = sys.platform == _WINDOWS
+"""Whether a PermissionError can mean another process has the file open.
+
+Windows refuses to replace, and sometimes to open, a file that another process
+has open, which CPython's `open` does without allowing deletion.
+"""
+
+IN_USE_TIMEOUT: Final[float] = 5.0
+"""Seconds `retry_while_in_use` keeps retrying, far longer than a manifest read."""
+
+IN_USE_POLL_INTERVAL: Final[float] = 0.01
+"""Seconds `retry_while_in_use` waits between attempts."""
+
+
+def retry_while_in_use[T](action: Callable[[], T], file: Path) -> T:
+    """Run action, retrying on Windows while another process has file open.
+
+    Readers hold the manifest open only for a moment, so a commit or read that
+    Windows refuses is retried until `IN_USE_TIMEOUT`. Elsewhere a
+    PermissionError means permission is really denied, so it is raised at once.
+
+    Args:
+        action: The file operation to run.
+        file: The file action uses, for logging.
+
+    Returns:
+        What action returns.
+
+    Raises:
+        PermissionError: If action still fails after the timeout, or at once
+            other than on Windows.
+        Exception: Any other error from action.
+    """
+    if not IN_USE_MEANS_RETRY:
+        return action()
+    attempts = math.ceil(IN_USE_TIMEOUT / IN_USE_POLL_INTERVAL)
+    for attempt in range(attempts):
+        with contextlib.suppress(PermissionError):
+            return action()
+        if not attempt:
+            _logger.debug("%s is in use by another process, retrying", file)
+        time.sleep(IN_USE_POLL_INTERVAL)
+    return action()
 
 
 def new_tmp_path(directory: Path, suffix: str) -> Path:

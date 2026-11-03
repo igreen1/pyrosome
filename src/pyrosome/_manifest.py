@@ -9,6 +9,7 @@ from pyrosome._files import (
     claim_first_free,
     remove_quietly,
     remove_tree,
+    retry_while_in_use,
     temporary_file,
     version_dir_index,
     version_dirs,
@@ -251,11 +252,13 @@ class DataManifestFile:
 
         Raises:
             FileNotFoundError: If the manifest file does not exist.
+            PermissionError: If the manifest file cannot be read, on Windows only
+                once it has been in use for `pyrosome._files.IN_USE_TIMEOUT`.
             json.JSONDecodeError: If the manifest file is not valid JSON.
             ValueError: If the manifest file has no valid latest data directory.
         """
         # writes replace the file atomically, so no lock is needed to read it
-        text = self.manifest_path.read_text()
+        text = retry_while_in_use(self.manifest_path.read_text, self.manifest_path)
         with logged_failure(_logger, "Manifest file %s is corrupt", self.manifest_path):
             manifest = cast("object", json.loads(text))
         match manifest:
@@ -279,12 +282,16 @@ class DataManifestFile:
             None.
 
         Raises:
-            OSError: If the manifest file cannot be written.
+            OSError: If the manifest file cannot be written, including when, on
+                Windows, readers keep it open for longer than
+                `pyrosome._files.IN_USE_TIMEOUT`.
         """
         manifest: dict[str, str] = {"latest_data_dir": latest_data_dir}
         with temporary_file(self.profile_path, ".json") as tmp_path:
             tmp_path.write_text(json.dumps(manifest, indent=4))
-            tmp_path.replace(self.manifest_path)
+            retry_while_in_use(
+                lambda: tmp_path.replace(self.manifest_path), self.manifest_path
+            )
 
     def lock(self) -> SimpleWriteLock:
         """Lock the manifest file, as every update to it does.
