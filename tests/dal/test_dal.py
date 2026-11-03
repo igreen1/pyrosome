@@ -447,17 +447,89 @@ class TestLogging:
         assert any(m.startswith("Released lock ") for m in messages)
         assert any(m.endswith("1.parquet") and "Appended" in m for m in messages)
         assert any(m.startswith("Reading ") and "2 file(s)" in m for m in messages)
-        assert all(record.levelno == logging.DEBUG for record in caplog.records)
+        assert all(record.levelno <= logging.INFO for record in caplog.records)
+
+    def test_write_and_append_log_at_info(self, dal, df, caplog):
+        caplog.set_level(logging.INFO, logger="pyrosome")
+        output_dir = dal.write(df, *KEYS)
+        dal.append(df, *KEYS)
+        dal.read(*KEYS)
+        assert [(r.levelno, r.getMessage()) for r in caplog.records] == [
+            (logging.INFO, f"Wrote {KEYS} as {output_dir}"),
+            (logging.INFO, f"Appended to {KEYS} as {output_dir / '1.parquet'}"),
+        ]
 
     def test_stale_commit_is_logged(self, dal, df, caplog):
-        caplog.set_level(logging.DEBUG, logger="pyrosome")
+        caplog.set_level(logging.INFO, logger="pyrosome")
         manifest = DataManifestFile(dal.get_profile_dir(*KEYS))
         dal.write(df, *KEYS)
         dal.write(df, *KEYS)
         manifest.commit_data_dir(manifest.profile_path / "v0")
         assert "already points at newer v1" in caplog.text
 
-    def test_silent_by_default(self, dal, df, caplog):
-        caplog.set_level(logging.INFO)
+    def test_reads_are_silent_at_info(self, dal, df, caplog):
         dal.write(df, *KEYS)
+        caplog.set_level(logging.INFO)
+        dal.read(*KEYS)
         assert not caplog.records
+
+    def test_package_logger_has_null_handler(self):
+        handlers = logging.getLogger("pyrosome").handlers
+        assert any(isinstance(h, logging.NullHandler) for h in handlers)
+
+    def test_failed_write_logs_exception(self, dal, df, monkeypatch, caplog):
+        def failing_sink(_data, _output_file):
+            raise RuntimeError
+
+        monkeypatch.setattr(ParquetDal, "_sink", staticmethod(failing_sink))
+        with pytest.raises(RuntimeError):
+            dal.write(df, *KEYS)
+        [record] = caplog.records
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is not None
+        assert record.getMessage().startswith(f"Failed to write {KEYS}")
+        assert "left uncommitted" in record.getMessage()
+
+    def test_failed_append_logs_exception(self, dal, df, monkeypatch, caplog):
+        dal.write(df, *KEYS)
+
+        def failing_sink(_data, _output_file):
+            raise RuntimeError
+
+        monkeypatch.setattr(ParquetDal, "_sink", staticmethod(failing_sink))
+        with pytest.raises(RuntimeError):
+            dal.append(df, *KEYS)
+        [record] = caplog.records
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is not None
+        assert record.getMessage().startswith(f"Failed to append to {KEYS}")
+
+    @pytest.mark.parametrize("contents", ["{}", "{"])
+    def test_corrupt_manifest_logs_error(self, dal, df, caplog, contents):
+        dal.write(df, *KEYS)
+        (dal.data_directory.joinpath(*KEYS) / "manifest.json").write_text(contents)
+        with pytest.raises(ValueError):
+            dal.read(*KEYS)
+        [record] = caplog.records
+        assert record.levelno == logging.ERROR
+        assert "manifest.json is corrupt" in record.getMessage()
+
+    def test_missing_version_dir_logs_exception(self, dal, df, caplog):
+        output_dir = dal.write(df, *KEYS)
+        delete_data_file(output_dir / "0.parquet")
+        output_dir.rmdir()
+        with pytest.raises(FileNotFoundError):
+            dal.read(*KEYS)
+        [record] = caplog.records
+        assert record.levelno == logging.ERROR
+        assert record.getMessage() == f"Cannot list version {output_dir} of {KEYS}"
+
+    def test_invalid_input_is_not_logged(self, dal, df, caplog):
+        dal.write(df, *KEYS)
+        with pytest.raises(ValueError):
+            dal.append(df.rename({"a": "c"}), *KEYS)
+        with pytest.raises(ValueError):
+            dal.read("..")
+        with pytest.raises(ProfileNotFoundError):
+            dal.read("missing")
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]

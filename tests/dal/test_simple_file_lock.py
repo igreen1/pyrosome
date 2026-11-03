@@ -1,6 +1,8 @@
 """Tests for the simple file lock."""
 
+import logging
 import time
+from pathlib import Path
 
 import pytest
 
@@ -62,3 +64,30 @@ def test_reentering_same_lock_fails(tmp_path):
     lock = SimpleWriteLock(tmp_path / "data.json")
     with lock, pytest.raises(LockError):
         lock.__enter__()
+
+
+def test_lock_timeout_logs_error(tmp_path, caplog):
+    path = tmp_path / "file.txt"
+    with SimpleWriteLock(path):
+        with pytest.raises(FileAlreadyLockedError), SimpleWriteLock(path):
+            pass
+    [record] = caplog.records
+    assert record.levelno == logging.ERROR
+    assert "crashed process" in record.getMessage()
+
+
+def test_failed_release_logs_exception(tmp_path, monkeypatch, caplog):
+    path = tmp_path / "file.txt"
+
+    def failing_unlink(_self, missing_ok=False):
+        raise PermissionError
+
+    lock = SimpleWriteLock(path)
+    with pytest.raises(PermissionError):
+        with lock:
+            monkeypatch.setattr(Path, "unlink", failing_unlink)
+    monkeypatch.undo()
+    [record] = caplog.records
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None
+    assert record.getMessage().startswith("Cannot release lock ")

@@ -1,5 +1,7 @@
 """Tests for Dataset, a group of profiles sharing keys and filters."""
 
+import logging
+
 import pandas as pd
 import polars as pl
 import pytest
@@ -155,3 +157,19 @@ class TestGetCacheProfile:
     def test_calculation_error_propagates(self, io):
         with pytest.raises(FileNotFoundError):
             Shop(io, "other").get_cache_profile("totals")
+
+    def test_calculation_error_is_logged(self, io, caplog):
+        with pytest.raises(FileNotFoundError):
+            Shop(io, "other").get_cache_profile("totals")
+        [record] = caplog.records
+        assert record.levelno == logging.ERROR
+        assert record.exc_info is not None
+        assert record.getMessage().startswith("Shop._calc_totals failed")
+
+    def test_calculation_is_logged_at_info(self, eu, caplog):
+        caplog.set_level(logging.INFO, logger="pyrosome")
+        eu.get_cache_profile("totals")
+        assert any(
+            r.levelno == logging.INFO and r.getMessage().startswith("Cached profile")
+            for r in caplog.records
+        )

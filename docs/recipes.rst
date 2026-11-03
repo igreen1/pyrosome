@@ -300,10 +300,22 @@ Keep each format in its own data directory; see the limitations in
 Debug with logging
 ------------------
 
-pyrosome logs each step of reading, writing and appending (version directories
-reserved, tmp files moved into place, manifest commits and lock waits) at
-``DEBUG`` level through the standard `logging` module, under the ``pyrosome``
-logger. Nothing is shown unless you configure logging, for example:
+pyrosome logs through the standard `logging` module, under the ``pyrosome``
+logger:
+
+- ``DEBUG``: each step of reading, writing and appending (version directories
+  reserved, tmp files moved into place, manifest commits and lock waits).
+- ``INFO``: each completed write and append, each profile a
+  `~pyrosome.Dataset` calculates and caches, and writes that another process
+  superseded with a newer version before they could be committed.
+- ``ERROR``: problems with the stored data rather than with the arguments, such
+  as a corrupt manifest, a manifest naming a missing version, or a lock still
+  held after the timeout (see :ref:`recipe-stale-lock`). Failed writes, appends
+  and profile calculations are logged with their traceback, saying what they
+  left behind, and the exception is then raised as usual.
+
+Invalid arguments, such as a bad key or columns that don't match, only raise.
+Nothing is shown unless you configure logging, for example:
 
 .. code-block:: python
 

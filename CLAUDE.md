@@ -56,6 +56,8 @@ The concurrency design is the non-obvious part, spread across both modules:
 - The manifest is replaced atomically (tmp + `replace`), so readers take no lock.
 - Readers only see files matching `_DATA_FILE_PATTERN[extension]` (`^\d+\.<ext>$`). Adding a new format means adding a pattern there as well as subclassing `_FileDal`.
 
+Logging: each module has `_logger = logging.getLogger(__name__)` and uses lazy `%`-style arguments (no f-strings). Levels: `DEBUG` for steps, `INFO` for completed writes/appends/cached profiles and superseded commits, `ERROR` for problems with stored data (corrupt manifest, missing version dir, lock timeout). Failures that leave something behind (write, append, `_calc_<profile>`, lock release) are logged with traceback via `pyrosome._logging.logged_failure` (a context manager, which also sidesteps pylint's one-statement `try`) and re-raised. Caller errors (bad keys, mismatched columns) only raise, never log. `pyrosome/_logging.py` adds only a `NullHandler` to the `pyrosome` logger, so nothing reaches stderr via `logging.lastResort`; users enable output via the `pyrosome` logger (see the "Debug with logging" recipe).
+
 Known limitation: `ParquetDal` and `CsvDal` share the manifest format, so mixing formats in one profile hides the other format's data.
 
 ## Tests and doctests
