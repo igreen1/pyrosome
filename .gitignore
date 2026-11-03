@@ -13,3 +13,10 @@ wheels/
 docs/_build/
 
 .vscode
+
+.mypy*
+.ruff*
+.pytest*
+.venv/
+.env
+.vscode
