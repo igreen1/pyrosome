@@ -3,6 +3,7 @@
 import contextlib
 import itertools
 import json
+import logging
 import os
 import re
 import stat
@@ -19,6 +20,8 @@ from pyrosome.simple_file_lock import SimpleWriteLock
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+
+_logger = logging.getLogger(__name__)
 
 _DATA_DIR_PATTERN = re.compile(r"v(\d+)")
 _MANIFEST_FILE_NAME = "manifest.json"
@@ -138,6 +141,12 @@ def _check_appendable(
             f"{existing.names()} for {keys}"
         )
         raise ValueError(msg)
+    if casts := {
+        name: f"{new[name]} -> {dtype}"
+        for name, dtype in existing.items()
+        if new[name] != dtype
+    }:
+        _logger.debug("Appending to %s needs casts %s", keys, casts)
     if mismatched := {
         name: f"{new[name]} into {dtype}"
         for name, dtype in existing.items()
@@ -230,6 +239,7 @@ def _remove_tmp_file(file: Path) -> None:
     """
     with contextlib.suppress(FileNotFoundError):
         file.chmod(stat.S_IREAD | stat.S_IWRITE)
+        _logger.debug("Removing leftover tmp file %s", file)
     file.unlink(missing_ok=True)
 
 
@@ -297,7 +307,9 @@ def _try_claim(claim: Callable[[int], None], candidate: int) -> bool:
     try:
         claim(candidate)
     except FileExistsError:
-        return False  # handles race conditions with other processes
+        # handles race conditions with other processes
+        _logger.debug("Candidate %d is already claimed, trying the next", candidate)
+        return False
     return True
 
 
@@ -424,6 +436,11 @@ class _FileDal(Dal):
             None.
         """
         self.data_directory = Path(os.fspath(data_directory))
+        _logger.debug(
+            "Created %s for data directory %s",
+            type(self).__name__,
+            self.data_directory,
+        )
 
     @override
     def read(self, *keys: str) -> pl.LazyFrame:
@@ -443,8 +460,15 @@ class _FileDal(Dal):
             polars.exceptions.PolarsError: If the data files cannot be scanned.
         """
         if not (latest_data := self._get_latest_profile_data_paths(*keys)):
+            _logger.debug("No data found for %s", keys)
             msg = f"Cannot find files for {keys}"
             raise ProfileNotFoundError(msg)
+        _logger.debug(
+            "Reading %s from %d file(s) in %s",
+            keys,
+            len(latest_data),
+            latest_data[0].parent,
+        )
         return self._scan(list(latest_data))
 
     @override
@@ -472,6 +496,7 @@ class _FileDal(Dal):
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the profile directory cannot be created or written to.
         """
+        _logger.debug("Writing new version of %s", keys)
         profile_dir = self.get_profile_dir(*keys)
         profile_dir.mkdir(parents=True, exist_ok=True)
         manifest = DataManifestFile(profile_dir)
@@ -479,11 +504,15 @@ class _FileDal(Dal):
         if isinstance(data, pl.DataFrame):
             data = data.lazy()
         tmp_file = _tmp_path(output_dir, f".{self.extension}")
+        _logger.debug("Sinking data for %s to %s", keys, tmp_file)
         self._sink(data, tmp_file)
         _make_read_only(tmp_file)
-        tmp_file.replace(output_dir / f"0.{self.extension}")
+        published = output_dir / f"0.{self.extension}"
+        tmp_file.replace(published)
+        _logger.debug("Moved %s to %s", tmp_file.name, published)
         # only point the manifest at the new version once its data is complete
         manifest.commit_data_dir(output_dir)
+        _logger.debug("Wrote %s to %s", keys, output_dir)
         return output_dir
 
     @override
@@ -511,6 +540,7 @@ class _FileDal(Dal):
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the data directory cannot be written to.
         """
+        _logger.debug("Appending to %s", keys)
         if not (latest_data := self._get_latest_profile_data_paths(*keys)):
             msg = f"Appending to empty data for {keys}. Writing instead"
             warnings.warn(msg, stacklevel=2, skip_file_prefixes=(_PACKAGE_DIR,))
@@ -524,12 +554,15 @@ class _FileDal(Dal):
 
         data_dir = latest_data[0].parent
         tmp_file = _tmp_path(data_dir, f".{self.extension}")
+        _logger.debug("Sinking appended data for %s to %s", keys, tmp_file)
         self._sink(data, tmp_file)
         _make_read_only(tmp_file)
         try:
-            return self._publish_append_file(tmp_file, latest_data)
+            published = self._publish_append_file(tmp_file, latest_data)
         finally:
             _remove_tmp_file(tmp_file)
+        _logger.debug("Appended to %s as %s", keys, published)
+        return published
 
     def _publish_append_file(
         self, tmp_file: Path, latest_data: tuple[Path, ...]
@@ -563,8 +596,16 @@ class _FileDal(Dal):
                 exist_ok=False
             ),
         )
+        if idx != next_idx:
+            _logger.debug(
+                "Indices %d to %d of %s were already claimed by other appends",
+                next_idx,
+                idx - 1,
+                data_dir,
+            )
         published = data_dir / f"{idx}.{self.extension}"
         tmp_file.replace(published)
+        _logger.debug("Moved %s to %s", tmp_file.name, published)
         return published
 
     def get_profile_dir(self, *keys: str) -> Path:
@@ -612,6 +653,7 @@ class _FileDal(Dal):
         try:
             return manifest_file.get_latest_data_dir()
         except FileNotFoundError:
+            _logger.debug("No manifest at %s", manifest_file.manifest_path)
             return None
 
     def _get_latest_profile_data_paths(self, *keys: str) -> tuple[Path, ...]:
@@ -811,7 +853,9 @@ class DataManifestFile:
             # mkdir is atomic, so concurrent writers never share a directory
             lambda idx: (self.profile_path / f"v{idx}").mkdir(exist_ok=False),
         )
-        return self.profile_path / f"v{idx}"
+        data_dir = self.profile_path / f"v{idx}"
+        _logger.debug("Reserved %s (%d existing version(s))", data_dir, len(existing))
+        return data_dir
 
     def commit_data_dir(self, data_dir: Path) -> None:
         """Point the manifest at data_dir, unless it already points at a newer version.
@@ -841,8 +885,20 @@ class DataManifestFile:
                 current_name is not None
                 and self._data_dir_index(current_name) >= new_idx
             ):
+                _logger.debug(
+                    "Not committing %s: manifest %s already points at newer %s",
+                    data_dir.name,
+                    self.manifest_path,
+                    current_name,
+                )
                 return
             self._write(data_dir.name)
+            _logger.debug(
+                "Committed %s to %s (was %s)",
+                data_dir.name,
+                self.manifest_path,
+                current_name,
+            )
 
     def _data_dir_index(self, name: str) -> int:
         """Get the version index from a data directory name like 'v3'.

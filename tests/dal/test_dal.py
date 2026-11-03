@@ -1,6 +1,7 @@
 """Tests for the data access layer."""
 
 import json
+import logging
 import stat
 import threading
 from concurrent.futures import ProcessPoolExecutor
@@ -431,3 +432,32 @@ class TestConcurrency:
             f"{i}.parquet" for i in range(self.N + 1)
         )
         assert dal.read(*KEYS).collect().height == 2 * (self.N + 1)
+
+
+class TestLogging:
+    def test_write_append_read_log_their_steps(self, dal, df, caplog):
+        caplog.set_level(logging.DEBUG, logger="pyrosome")
+        dal.write(df, *KEYS)
+        dal.append(df, *KEYS)
+        dal.read(*KEYS)
+        messages = [record.getMessage() for record in caplog.records]
+        assert any(m.startswith("Reserved ") for m in messages)
+        assert any(m.startswith("Committed v0 to ") for m in messages)
+        assert any(m.startswith("Acquired lock ") for m in messages)
+        assert any(m.startswith("Released lock ") for m in messages)
+        assert any(m.endswith("1.parquet") and "Appended" in m for m in messages)
+        assert any(m.startswith("Reading ") and "2 file(s)" in m for m in messages)
+        assert all(record.levelno == logging.DEBUG for record in caplog.records)
+
+    def test_stale_commit_is_logged(self, dal, df, caplog):
+        caplog.set_level(logging.DEBUG, logger="pyrosome")
+        manifest = DataManifestFile(dal.get_profile_dir(*KEYS))
+        dal.write(df, *KEYS)
+        dal.write(df, *KEYS)
+        manifest.commit_data_dir(manifest.profile_path / "v0")
+        assert "already points at newer v1" in caplog.text
+
+    def test_silent_by_default(self, dal, df, caplog):
+        caplog.set_level(logging.INFO)
+        dal.write(df, *KEYS)
+        assert not caplog.records

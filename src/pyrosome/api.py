@@ -2,6 +2,7 @@
 
 import datetime as dt
 import itertools
+import logging
 from typing import TYPE_CHECKING, cast
 
 import polars as pl
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
 
     from pyrosome.dal import ParquetDal
 
+
+_logger = logging.getLogger(__name__)
 
 type FilterValue = str | int | bool | dt.date | None
 """A value `pyrosome.SimpleIo.read` can filter a column by.
@@ -77,7 +80,9 @@ def _to_polars(
     # only the level names are read, so the element type is irrelevant
     index_names = cast("pd.Index[str]", data.index).names
     if any(name is not None for name in index_names):
+        _logger.debug("Moving pandas index levels %s into columns", list(index_names))
         data = data.reset_index()
+    _logger.debug("Converting a pandas frame of shape %s to polars", data.shape)
     return pl.from_pandas(data)
 
 
@@ -195,6 +200,7 @@ class SimpleIo:
         if missing := [column for column in filters if column not in schema]:
             msg = f"No column named {', '.join(missing)} in {'/'.join(keys)}"
             raise pl.exceptions.ColumnNotFoundError(msg)
+        _logger.debug("Filtering %s by %s", keys, filters)
         return data.filter(*itertools.starmap(_equals, filters.items()))
 
     def write(

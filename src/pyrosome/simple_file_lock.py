@@ -5,6 +5,7 @@ This prevents multiple processes from reading or writing to the same file at the
 same time, which could cause data corruption.
 """
 
+import logging
 import math
 import time
 from typing import TYPE_CHECKING, Self
@@ -13,6 +14,8 @@ if TYPE_CHECKING:
     from pathlib import Path
     from types import TracebackType
 
+
+_logger = logging.getLogger(__name__)
 
 _WRITE_LOCK_SUFFIX = ".write_lock"
 
@@ -93,7 +96,19 @@ class SimpleWriteLock:
             if attempt:
                 time.sleep(self.poll_interval)
             if self._try_acquire():
+                _logger.debug(
+                    "Acquired lock %s after %d attempt(s)", self.lock_path, attempt + 1
+                )
                 return self
+            if not attempt:
+                _logger.debug(
+                    "Lock %s is held by another process, waiting up to %ss",
+                    self.lock_path,
+                    self.timeout,
+                )
+        _logger.debug(
+            "Gave up on lock %s after %d attempt(s)", self.lock_path, attempts
+        )
         raise FileAlreadyLockedError(self.path)
 
     def __exit__(
@@ -120,6 +135,7 @@ class SimpleWriteLock:
         if self.locked:
             self.lock_path.unlink()
             self.locked = False
+            _logger.debug("Released lock %s", self.lock_path)
 
     def _try_acquire(self) -> bool:
         """Try to take the lock once.

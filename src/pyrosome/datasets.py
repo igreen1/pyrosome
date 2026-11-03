@@ -1,6 +1,7 @@
 """Datasets are simplified apis to allow a user to group related data together."""
 
 import contextlib
+import logging
 from typing import TYPE_CHECKING, Self, cast
 
 from pyrosome.dal import ProfileNotFoundError
@@ -14,6 +15,9 @@ if TYPE_CHECKING:
     from pyrosome.api import FilterValue, SimpleIo
 
     type Frame = pl.DataFrame | pl.LazyFrame | pd.DataFrame
+
+
+_logger = logging.getLogger(__name__)
 
 
 class Dataset:
@@ -143,7 +147,12 @@ class Dataset:
         """
         if not refresh:
             with contextlib.suppress(ProfileNotFoundError):
-                return self.get_profile(*keys)
+                profile = self.get_profile(*keys)
+                _logger.debug("Using cached profile %s of %s", keys, self.keys)
+                return profile
+            _logger.debug("No cached profile %s of %s", keys, self.keys)
+        else:
+            _logger.debug("Refreshing profile %s of %s", keys, self.keys)
         self._calculate_profile(*keys)
         return self.get_profile(*keys)
 
@@ -174,6 +183,13 @@ class Dataset:
             Exception: Anything the ``_calc_<profile>`` method raises.
         """
         calc_fn = self._get_calc_function(*keys)
+        _logger.debug(
+            "Calculating profile %s of %s with %s._calc_%s",
+            keys,
+            self.keys,
+            type(self).__name__,
+            "_".join(keys),
+        )
         # calculate from every row, not just this dataset's subset
         self._store.write(calc_fn(self.without_filters()), *self.keys, *keys)
 

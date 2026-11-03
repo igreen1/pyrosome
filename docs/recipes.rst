@@ -295,6 +295,26 @@ Keep each format in its own data directory; see the limitations in
    ['total', '10.0']
    >>> _ = dal.write(csv_dal.read("sales", "eu"), "sales", "eu_from_csv")
 
+.. _recipe-debug-logging:
+
+Debug with logging
+------------------
+
+pyrosome logs each step of reading, writing and appending (version directories
+reserved, tmp files moved into place, manifest commits and lock waits) at
+``DEBUG`` level through the standard `logging` module, under the ``pyrosome``
+logger. Nothing is shown unless you configure logging, for example:
+
+.. code-block:: python
+
+   import logging
+
+   logging.basicConfig(format="%(asctime)s %(name)s: %(message)s")
+   logging.getLogger("pyrosome").setLevel(logging.DEBUG)
+
+Use ``pyrosome.dal`` or ``pyrosome.simple_file_lock`` instead of ``pyrosome`` to
+see only the storage or only the locking.
+
 .. _recipe-stale-lock:
 
 Recover from a crashed writer
