@@ -1,43 +1,53 @@
 """Primary API for writing/reading/appending."""
 
-import contextlib
-import itertools
-import json
+import functools
 import logging
+import math
 import os
-import re
-import stat
-import uuid
+import time
 import warnings
 from abc import abstractmethod
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, Literal, Protocol, cast, overload, override
+from typing import TYPE_CHECKING, Final, Literal, Protocol, overload, override
 
 import polars as pl
 
+from pyrosome._files import (
+    data_files,
+    make_read_only,
+    publish_append_file,
+    temporary_file,
+    try_claim,
+)
 from pyrosome._keys import (
-    DATA_DIR_PATTERN,
-    MANIFEST_FILE_NAME,
     check_key,
     find_profile_dirs,
     matches_case_on_disk,
 )
 from pyrosome._logging import logged_failure
-from pyrosome._schema import check_appendable
-from pyrosome.simple_file_lock import SimpleWriteLock
+from pyrosome._maintenance import Maintenance, ProfileChangedError
+from pyrosome._manifest import DataManifestFile, discarded_on_failure
+from pyrosome._schema import check_appendable, promote_null_columns
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 
+__all__ = [
+    "CsvDal",
+    "Dal",
+    "DataManifestFile",
+    "ParquetDal",
+    "ProfileChangedError",
+    "ProfileNotFoundError",
+    "SupersededAppendError",
+    "get_accessor",
+]
+
 _logger = logging.getLogger(__name__)
 
 # warnings point at the caller of pyrosome, not at the module that raised them
 _PACKAGE_DIR = str(Path(__file__).parent) + os.sep
-_DATA_FILE_PATTERN = {
-    "parquet": re.compile(r"(\d+)\.parquet"),
-    "csv": re.compile(r"(\d+)\.csv"),
-}
 
 
 @overload
@@ -66,146 +76,56 @@ def get_accessor(file_ending: str) -> type[ParquetDal | CsvDal]:
             raise ValueError(msg)
 
 
-def _tmp_path(directory: Path, suffix: str) -> Path:
-    """Get a hidden temporary path in directory that is never picked up as data.
+def _warn_writing_instead(keys: tuple[str, ...]) -> None:
+    """Warn that an append is writing the first version of a profile.
 
     Args:
-        directory: The directory the temporary file will be in.
-        suffix: Suffix to put before the final `.tmp`.
-
-    Returns:
-        A new, unique temporary path.
-    """
-    return directory / f".{uuid.uuid4().hex}{suffix}.tmp"
-
-
-def _make_read_only(file: Path) -> None:
-    """Remove every write permission from file so finished data is never modified.
-
-    Args:
-        file: The file to make read only.
+        keys: Path components naming the profile.
 
     Returns:
         None.
-
-    Raises:
-        OSError: If the file's permissions cannot be read or changed.
     """
-    file.chmod(
-        stat.S_IMODE(file.stat().st_mode)
-        & ~(stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
-    )
-
-
-def _remove_tmp_file(file: Path) -> None:
-    """Delete a tmp file if it still exists, even if it has been made read only.
-
-    Windows cannot delete read-only files, so write permission is restored first.
-    This is only safe because tmp files are never linked anywhere else.
-
-    Args:
-        file: The tmp file to delete.
-
-    Returns:
-        None.
-
-    Raises:
-        OSError: If the file exists but cannot be deleted.
-    """
-    with contextlib.suppress(FileNotFoundError):
-        file.chmod(stat.S_IREAD | stat.S_IWRITE)
-        _logger.debug("Removing leftover tmp file %s", file)
-    file.unlink(missing_ok=True)
-
-
-def _claim_marker(data_dir: Path, idx: int, extension: str) -> Path:
-    """Get the hidden marker file whose creation claims a data file index.
-
-    Args:
-        data_dir: The version directory.
-        idx: The data file index.
-        extension: The file extension of the data files.
-
-    Returns:
-        The marker path, e.g. `.3.parquet.claim`.
-    """
-    return data_dir / f".{idx}.{extension}.claim"
-
-
-def _data_file_index(file: Path) -> int:
-    """Get the index of a data file like `3.parquet`.
-
-    Args:
-        file: The data file.
-
-    Returns:
-        The index in the file name.
-
-    Raises:
-        ValueError: If the file name is not an integer index.
-    """
-    return int(file.stem)
-
-
-def _data_files(data_dir: Path, extension: str) -> tuple[Path, ...]:
-    """Get the data files in a version directory, sorted by their index.
-
-    Args:
-        data_dir: The version directory.
-        extension: The file extension of the data files.
-
-    Returns:
-        The data files, sorted by index.
-
-    Raises:
-        KeyError: If there is no data file pattern for extension.
-        OSError: If data_dir cannot be listed.
-    """
-    pat = _DATA_FILE_PATTERN[extension]
-    files = (file for file in data_dir.iterdir() if pat.fullmatch(file.name))
-    return tuple(sorted(files, key=_data_file_index))
-
-
-def _try_claim(claim: Callable[[int], None], candidate: int) -> bool:
-    """Try to claim a candidate.
-
-    Args:
-        claim: Atomically claims a candidate, raising FileExistsError if it is taken.
-        candidate: The candidate to claim.
-
-    Returns:
-        Whether the candidate was claimed, False if another process already did.
-
-    Raises:
-        Exception: Any error from claim other than FileExistsError.
-    """
-    try:
-        claim(candidate)
-    except FileExistsError:
-        # handles race conditions with other processes
-        _logger.debug("Candidate %d is already claimed, trying the next", candidate)
-        return False
-    return True
-
-
-def _claim_first_free(start: int, claim: Callable[[int], None]) -> int:
-    """Claim the first number from start that is not already taken.
-
-    Args:
-        start: The first number to try.
-        claim: Atomically claims a number, raising FileExistsError if it is taken.
-
-    Returns:
-        The number that was claimed.
-
-    Raises:
-        Exception: Any error from claim other than FileExistsError.
-    """
-    return next(idx for idx in itertools.count(start) if _try_claim(claim, idx))
+    msg = f"Appending to empty data for {keys}. Writing instead"
+    warnings.warn(msg, stacklevel=2, skip_file_prefixes=(_PACKAGE_DIR,))
 
 
 class ProfileNotFoundError(FileNotFoundError):
     """There is no data for a profile, as opposed to data that cannot be found."""
+
+
+class SupersededAppendError(RuntimeError):
+    """An append finished after another process committed a newer version.
+
+    The appended file was published into a version that is no longer the latest,
+    so readers don't see it. Append the data again to add it to the latest version.
+    """
+
+    published: Path
+    """The file the data was appended as, in the superseded version."""
+
+    latest_data_dir: Path
+    """The version that was committed while appending."""
+
+    def __init__(
+        self, keys: tuple[str, ...], published: Path, latest_data_dir: Path
+    ) -> None:
+        """Describe an append that went into a superseded version.
+
+        Args:
+            keys: Path components naming the profile.
+            published: The file the data was appended as.
+            latest_data_dir: The version that was committed while appending.
+
+        Returns:
+            None.
+        """
+        super().__init__(
+            f"Appended to {keys} as {published}, but {latest_data_dir.name} was "
+            f"committed meanwhile, so readers don't see it. Append it again to add "
+            "it to the latest version."
+        )
+        self.published = published
+        self.latest_data_dir = latest_data_dir
 
 
 class Dal(Protocol):
@@ -279,7 +199,7 @@ class Dal(Protocol):
         raise NotImplementedError(msg)
 
 
-class _FileDal(Dal):
+class _FileDal(Maintenance, Dal):
     """Abstract file DAL with read/write/append for files."""
 
     data_directory: Path
@@ -287,6 +207,12 @@ class _FileDal(Dal):
 
     extension: str
     """File extension of the data files, without the leading dot."""
+
+    FIRST_COMMIT_TIMEOUT: Final[float] = 120.0
+    """Seconds `append` waits for another process to commit a profile's first
+    version."""
+
+    _POLL_INTERVAL: Final[float] = 0.05
 
     @staticmethod
     @abstractmethod
@@ -353,10 +279,7 @@ class _FileDal(Dal):
                 data directory, or the profile's manifest file is corrupt.
             polars.exceptions.PolarsError: If the data files cannot be scanned.
         """
-        if not (latest_data := self._get_latest_profile_data_paths(*keys)):
-            _logger.debug("No data found for %s", keys)
-            msg = f"Cannot find files for {keys}"
-            raise ProfileNotFoundError(msg)
+        latest_data = self._require_latest_data(*keys)
         _logger.debug(
             "Reading %s from %d file(s) in %s",
             keys,
@@ -370,6 +293,9 @@ class _FileDal(Dal):
         """Write the data as a new version.
 
         Readers keep seeing the previous version until the write is complete.
+        Columns whose type is ``Null``, because every value is null, are stored as
+        ``String`` so that later appends can fill them. If the write fails, the
+        new version is removed again.
 
         Args:
             data: The data to write.
@@ -392,30 +318,9 @@ class _FileDal(Dal):
             OSError: If the profile directory cannot be created or written to.
         """
         _logger.debug("Writing new version of %s", keys)
-        profile_dir = self.get_profile_dir(*keys)
-        self._check_case_for_write(profile_dir, keys)
-        profile_dir.mkdir(parents=True, exist_ok=True)
-        # another writer may have created a directory with different case meanwhile
-        self._check_case_for_write(profile_dir, keys)
-        manifest = DataManifestFile(profile_dir)
+        manifest = DataManifestFile(self._make_profile_dir(keys))
         output_dir = manifest.reserve_new_data_dir()
-        if isinstance(data, pl.DataFrame):
-            data = data.lazy()
-        tmp_file = _tmp_path(output_dir, f".{self.extension}")
-        with logged_failure(
-            _logger,
-            "Failed to write %s: %s is left uncommitted, so readers ignore it",
-            keys,
-            output_dir,
-        ):
-            _logger.debug("Sinking data for %s to %s", keys, tmp_file)
-            self._sink(data, tmp_file)
-            _make_read_only(tmp_file)
-            published = output_dir / f"0.{self.extension}"
-            tmp_file.replace(published)
-            _logger.debug("Moved %s to %s", tmp_file.name, published)
-            # only point the manifest at the new version once its data is complete
-            manifest.commit_data_dir(output_dir)
+        self._write_version(data, keys, manifest, output_dir)
         _logger.info("Wrote %s as %s", keys, output_dir)
         return output_dir
 
@@ -424,8 +329,12 @@ class _FileDal(Dal):
         """Add a new file to the latest data directory without touching existing files.
 
         Columns are reordered to match the existing data, and cast to its types when
-        that loses no values, such as ``Int32`` to ``Int64``. If there is no existing
-        data this warns and writes instead.
+        that loses no values, such as ``Int32`` to ``Int64``.
+
+        If the profile has no data yet, this warns and writes the first version
+        instead. When several processes do that at once, one writes ``v0`` and
+        the others wait up to `FIRST_COMMIT_TIMEOUT` seconds for it to be
+        committed, then append to it.
 
         Args:
             data: The data to append. Its columns must match the existing data.
@@ -436,84 +345,298 @@ class _FileDal(Dal):
             existing data.
 
         Raises:
+            SupersededAppendError: If another process committed a newer version
+                while appending, so readers don't see the appended data.
+            TimeoutError: If the profile has no data and another process's first
+                version is not committed within `FIRST_COMMIT_TIMEOUT` seconds.
             ValueError: If the columns or their types do not match the existing data
                 (a type must cast to the existing one without losing values), or for
                 any reason `write` raises it.
             FileNotFoundError: If the latest version directory is missing.
             RuntimeError: If the latest data spans more than one directory.
+            pyrosome.simple_file_lock.FileAlreadyLockedError: If there was no data
+                and another process holds the manifest lock for longer than
+                `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
+            pyrosome.simple_file_lock.FileLockPermissionError: If there was no data
+                and the manifest cannot be locked.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the data directory cannot be written to.
         """
         _logger.debug("Appending to %s", keys)
-        if not (latest_data := self._get_latest_profile_data_paths(*keys)):
-            self._check_case_for_write(self.get_profile_dir(*keys), keys)
-            msg = f"Appending to empty data for {keys}. Writing instead"
-            warnings.warn(msg, stacklevel=2, skip_file_prefixes=(_PACKAGE_DIR,))
-            return self.write(data, *keys)
-
         if isinstance(data, pl.DataFrame):
             data = data.lazy()
+        if latest_data := self._get_latest_profile_data_paths(*keys):
+            return self._append_to_version(data, keys, latest_data)
+        return self._append_to_new_profile(data, keys)
+
+    def _make_profile_dir(self, keys: tuple[str, ...]) -> Path:
+        """Create the profile directory named by keys, if it doesn't exist.
+
+        Args:
+            keys: Path components naming the profile.
+
+        Returns:
+            The profile directory.
+
+        Raises:
+            ValueError: If there are no keys, a key is invalid or leads outside the
+                data directory, or the keys differ only in case from an existing
+                directory on a case-insensitive file system.
+            OSError: If the directory cannot be created.
+        """
+        profile_dir = self.get_profile_dir(*keys)
+        self._check_case_for_write(profile_dir, keys)
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        # another writer may have created a directory with different case meanwhile
+        self._check_case_for_write(profile_dir, keys)
+        return profile_dir
+
+    def _write_version(
+        self,
+        data: pl.DataFrame | pl.LazyFrame,
+        keys: tuple[str, ...],
+        manifest: DataManifestFile,
+        output_dir: Path,
+        only_if: Callable[[str | None], bool] | None = None,
+    ) -> bool:
+        """Write data as the first file of a reserved version, then commit it.
+
+        If anything fails, the version is removed again, unless the manifest
+        already points at it.
+
+        Args:
+            data: The data to write.
+            keys: Path components naming the profile, for logging.
+            manifest: The profile's manifest.
+            output_dir: The reserved, empty version directory.
+            only_if: Passed on to `DataManifestFile.commit_data_dir`.
+
+        Returns:
+            Whether the manifest now points at output_dir.
+
+        Raises:
+            ValueError: If the manifest file is corrupt or names an invalid version.
+            pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
+                the manifest lock for longer than
+                `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
+            pyrosome.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                be locked.
+            polars.exceptions.PolarsError: If the data cannot be computed or written.
+            OSError: If the data or the manifest cannot be written.
+        """
+        if isinstance(data, pl.DataFrame):
+            data = data.lazy()
+        data = promote_null_columns(data)
+        with (
+            discarded_on_failure(manifest, output_dir),
+            logged_failure(
+                _logger,
+                "Failed to write %s as %s, so the version is removed",
+                keys,
+                output_dir,
+            ),
+        ):
+            with temporary_file(output_dir, f".{self.extension}") as tmp_file:
+                _logger.debug("Sinking data for %s to %s", keys, tmp_file)
+                self._sink(data, tmp_file)
+                make_read_only(tmp_file)
+                published = output_dir / f"0.{self.extension}"
+                tmp_file.replace(published)
+                _logger.debug("Moved %s to %s", tmp_file.name, published)
+            # only point the manifest at the new version once its data is complete
+            return manifest.commit_data_dir(output_dir, only_if=only_if)
+
+    @override
+    def _rewrite_version(
+        self,
+        source: tuple[Path, ...],
+        keys: tuple[str, ...],
+        manifest: DataManifestFile,
+        output_dir: Path,
+    ) -> bool:
+        """Write the data in source files as a reserved version, then commit it.
+
+        It is only committed if the version holding source is still the latest and
+        has exactly the same data files.
+
+        Args:
+            source: The data files of the latest version.
+            keys: Path components naming the profile, for logging.
+            manifest: The profile's manifest.
+            output_dir: The reserved, empty version directory.
+
+        Returns:
+            Whether the manifest now points at output_dir.
+
+        Raises:
+            ValueError: If the manifest file is corrupt or names an invalid version.
+            pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
+                the manifest lock for longer than
+                `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
+            pyrosome.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                be locked.
+            polars.exceptions.PolarsError: If the data cannot be read or written.
+            OSError: If the data or the manifest cannot be written.
+        """
+        unchanged = functools.partial(self._is_unchanged, source)
+        return self._write_version(
+            self._scan(list(source)), keys, manifest, output_dir, only_if=unchanged
+        )
+
+    def _is_unchanged(self, source: tuple[Path, ...], latest_name: str | None) -> bool:
+        """Check that a version is still the latest and has the same data files.
+
+        Args:
+            source: The data files of the version, as they were.
+            latest_name: The name of the latest version now.
+
+        Returns:
+            Whether the version is still the latest and has exactly source.
+
+        Raises:
+            OSError: If the version cannot be listed.
+        """
+        source_dir = source[0].parent
+        return latest_name == source_dir.name and (
+            data_files(source_dir, self.extension) == source
+        )
+
+    def _append_to_version(
+        self,
+        data: pl.LazyFrame,
+        keys: tuple[str, ...],
+        latest_data: tuple[Path, ...],
+    ) -> Path:
+        """Append data as a new file in the version holding latest_data.
+
+        Args:
+            data: The data to append.
+            keys: Path components naming the profile.
+            latest_data: The data files in the latest version.
+
+        Returns:
+            The path of the new file.
+
+        Raises:
+            SupersededAppendError: If another process committed a newer version
+                while appending.
+            ValueError: If the columns or their types do not match the existing
+                data, or the manifest is corrupt.
+            RuntimeError: If latest_data spans more than one directory.
+            polars.exceptions.PolarsError: If the data cannot be computed or written.
+            OSError: If the data directory cannot be written to.
+        """
         existing_schema = self._scan(list(latest_data)).collect_schema()
         check_appendable(data.collect_schema(), existing_schema, keys)
         data = data.select(existing_schema.names()).cast(existing_schema)
 
         data_dir = latest_data[0].parent
-        tmp_file = _tmp_path(data_dir, f".{self.extension}")
         with logged_failure(_logger, "Failed to append to %s in %s", keys, data_dir):
-            _logger.debug("Sinking appended data for %s to %s", keys, tmp_file)
-            self._sink(data, tmp_file)
-            _make_read_only(tmp_file)
-            try:
-                published = self._publish_append_file(tmp_file, latest_data)
-            finally:
-                _remove_tmp_file(tmp_file)
+            with temporary_file(data_dir, f".{self.extension}") as tmp_file:
+                _logger.debug("Sinking appended data for %s to %s", keys, tmp_file)
+                self._sink(data, tmp_file)
+                make_read_only(tmp_file)
+                published = publish_append_file(tmp_file, latest_data, self.extension)
+            # a version committed before the file was published hides it from
+            # readers, so the caller must know to append again
+            manifest = DataManifestFile(data_dir.parent)
+            if (latest_dir := manifest.get_latest_data_dir()) != data_dir:
+                raise SupersededAppendError(keys, published, latest_dir)
         _logger.info("Appended to %s as %s", keys, published)
         return published
 
-    def _publish_append_file(
-        self, tmp_file: Path, latest_data: tuple[Path, ...]
-    ) -> Path:
-        """Give the finished tmp file the next free index without overwriting others.
+    def _append_to_new_profile(self, data: pl.LazyFrame, keys: tuple[str, ...]) -> Path:
+        """Append to a profile with no data, by writing its first version.
+
+        If another process is already writing the first version, wait for it to
+        be committed and append to it instead.
 
         Args:
-            tmp_file: The finished data file to publish.
-            latest_data: The data files in the latest version.
+            data: The data to append.
+            keys: Path components naming the profile.
 
         Returns:
-            The published path.
+            The new version directory, or the appended file if another process
+            wrote the first version.
 
         Raises:
-            RuntimeError: If latest_data spans more than one directory.
-            OSError: If the index cannot be claimed or the file cannot be moved into
-                the data directory.
+            SupersededAppendError: If another process committed a newer version
+                while writing the first one.
+            TimeoutError: If another process's first version is not committed within
+                `FIRST_COMMIT_TIMEOUT` seconds.
+            ValueError: For any reason `write` or `append` raises it.
+            pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
+                the manifest lock for longer than
+                `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
+            pyrosome.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                be locked.
+            polars.exceptions.PolarsError: If the data cannot be computed or written.
+            OSError: If the profile directory cannot be written to.
         """
-        parent_dirs = {file.parent for file in latest_data}
-        if len(parent_dirs) > 1:
-            msg = f"Latest data spans multiple directories: {sorted(parent_dirs)}"
-            _logger.error(msg)
-            raise RuntimeError(msg)
-        data_dir = parent_dirs.pop()
-        next_idx = max(_data_file_index(file) for file in latest_data) + 1
-        # exclusive create is atomic on local disks, SMB and NFSv3+, so exactly one
-        # append owns each index. Markers are kept so an index is never re-claimed:
-        # a plain rename would silently replace a file published by another append
-        idx = _claim_first_free(
-            next_idx,
-            lambda idx: _claim_marker(data_dir, idx, self.extension).touch(
-                exist_ok=False
-            ),
+        manifest = DataManifestFile(self._make_profile_dir(keys))
+        first_version = manifest.profile_path / "v0"
+        attempts = 1 + math.ceil(self.FIRST_COMMIT_TIMEOUT / self._POLL_INTERVAL)
+        for attempt in range(attempts):
+            if attempt:
+                time.sleep(self._POLL_INTERVAL)
+            if latest_data := self._get_latest_profile_data_paths(*keys):
+                _logger.debug("Another process wrote the first version of %s", keys)
+                return self._append_to_version(data, keys, latest_data)
+            if manifest.exists():
+                # the latest version only holds another format's data
+                _warn_writing_instead(keys)
+                return self.write(data, *keys)
+            if try_claim(lambda _: first_version.mkdir(), 0):
+                _warn_writing_instead(keys)
+                return self._write_first_version(data, keys, manifest, first_version)
+            if not attempt:
+                _logger.debug("Waiting for another process to commit %s", first_version)
+        msg = (
+            f"{first_version} was not committed within {self.FIRST_COMMIT_TIMEOUT}s. "
+            "Another process may still be writing it, or a failed write left it "
+            "behind: vacuum removes it once no write is running."
         )
-        if idx != next_idx:
-            _logger.debug(
-                "Indices %d to %d of %s were already claimed by other appends",
-                next_idx,
-                idx - 1,
-                data_dir,
+        _logger.error(msg)
+        raise TimeoutError(msg)
+
+    def _write_first_version(
+        self,
+        data: pl.LazyFrame,
+        keys: tuple[str, ...],
+        manifest: DataManifestFile,
+        first_version: Path,
+    ) -> Path:
+        """Write the data of an append to a profile with no data.
+
+        Args:
+            data: The data to write.
+            keys: Path components naming the profile.
+            manifest: The profile's manifest.
+            first_version: The ``v0`` directory, which this process claimed.
+
+        Returns:
+            The new version directory.
+
+        Raises:
+            SupersededAppendError: If another process committed a newer version
+                while writing first_version.
+            ValueError: For any reason `write` raises it.
+            pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
+                the manifest lock for longer than
+                `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
+            pyrosome.simple_file_lock.FileLockPermissionError: If the manifest cannot
+                be locked.
+            polars.exceptions.PolarsError: If the data cannot be computed or written.
+            OSError: If the profile directory cannot be written to.
+        """
+        if not self._write_version(data, keys, manifest, first_version):
+            raise SupersededAppendError(
+                keys,
+                first_version / f"0.{self.extension}",
+                manifest.get_latest_data_dir(),
             )
-        published = data_dir / f"{idx}.{self.extension}"
-        tmp_file.replace(published)
-        _logger.debug("Moved %s to %s", tmp_file.name, published)
-        return published
+        _logger.info("Wrote %s as %s", keys, first_version)
+        return first_version
 
     @override
     def available_profiles(self, *keys: str) -> tuple[tuple[str, ...], ...]:
@@ -592,7 +715,7 @@ class _FileDal(Dal):
             _logger.debug("Not listing %s: its manifest is corrupt", profile_dir)
             return False
         try:
-            data_files = _data_files(latest_dir, self.extension)
+            files = data_files(latest_dir, self.extension)
         except FileNotFoundError:
             _logger.exception(
                 "Not listing %s: its manifest names missing %s",
@@ -600,14 +723,14 @@ class _FileDal(Dal):
                 latest_dir.name,
             )
             return False
-        if not data_files:
+        if not files:
             _logger.debug(
                 "Not listing %s: %s has no .%s files",
                 profile_dir,
                 latest_dir.name,
                 self.extension,
             )
-        return bool(data_files)
+        return bool(files)
 
     def _check_case_for_write(self, profile_dir: Path, keys: tuple[str, ...]) -> None:
         """Refuse to write to a directory whose name differs from keys only in case.
@@ -631,6 +754,7 @@ class _FileDal(Dal):
             )
             raise ValueError(msg)
 
+    @override
     def get_profile_dir(self, *keys: str) -> Path:
         """Get path to the profile directory described by keys.
 
@@ -685,6 +809,30 @@ class _FileDal(Dal):
             _logger.debug("No manifest at %s", manifest_file.manifest_path)
             return None
 
+    @override
+    def _require_latest_data(self, *keys: str) -> tuple[Path, ...]:
+        """Get the data files of the latest version, which must have some.
+
+        Args:
+            *keys: Path components naming the profile.
+
+        Returns:
+            The latest data files, sorted by index.
+
+        Raises:
+            ProfileNotFoundError: If there is no data for keys, including when a
+                directory on disk differs from keys only in case.
+            ValueError: If there are no keys, a key is invalid, the keys lead outside
+                the data directory, or the profile's manifest file is corrupt.
+            FileNotFoundError: If the manifest names a missing version directory.
+            OSError: If the version directory cannot be listed.
+        """
+        if not (latest_data := self._get_latest_profile_data_paths(*keys)):
+            _logger.debug("No data found for %s", keys)
+            msg = f"Cannot find files for {keys}"
+            raise ProfileNotFoundError(msg)
+        return latest_data
+
     def _get_latest_profile_data_paths(self, *keys: str) -> tuple[Path, ...]:
         """Get a concrete list of the paths with the latest data.
 
@@ -703,7 +851,7 @@ class _FileDal(Dal):
         if (latest_dir := self._get_latest_profile_version(*keys)) is None:
             return ()
         with logged_failure(_logger, "Cannot list version %s of %s", latest_dir, keys):
-            return _data_files(latest_dir, extension=self.extension)
+            return data_files(latest_dir, extension=self.extension)
 
 
 class ParquetDal(_FileDal):
@@ -814,186 +962,3 @@ class CsvDal(_FileDal):
             polars.exceptions.PolarsError: If the files cannot be scanned.
         """
         return pl.scan_csv(output_paths)
-
-
-class DataManifestFile:
-    """A manifest file that records the latest version of a profile."""
-
-    profile_path: Path
-    """Path to the profile directory."""
-
-    MANIFEST_FILE_NAME: Final[str] = MANIFEST_FILE_NAME
-    """Name of the manifest file inside the profile directory."""
-
-    LOCK_TIMEOUT: Final[float] = 10.0
-    """Seconds to wait for another process to finish writing the manifest."""
-
-    def __init__(self, profile_path: Path) -> None:
-        """Create a handle on the manifest in profile_path. Nothing is read yet.
-
-        Args:
-            profile_path: Path to the profile directory.
-
-        Returns:
-            None.
-        """
-        self.profile_path = profile_path
-        self.manifest_path = profile_path / self.MANIFEST_FILE_NAME
-
-    def exists(self) -> bool:
-        """Does the manifest file even exist yet?
-
-        Returns:
-            Whether the manifest file exists.
-        """
-        return self.manifest_path.exists()
-
-    def get_latest_data_dir(self) -> Path:
-        """Get the latest data directory described by the manifest file.
-
-        Returns:
-            The latest data directory.
-
-        Raises:
-            FileNotFoundError: If the manifest file does not exist. The directory it
-                names is not checked, so listing it raises if it is missing.
-            ValueError: If the manifest file is corrupt.
-        """
-        return self.profile_path / self._read_latest_data_dir_name()
-
-    def reserve_new_data_dir(self) -> Path:
-        """Create and return the next version of the data directory.
-
-        The manifest is not updated; call `commit_data_dir` once the data is written.
-
-        Returns:
-            The new, empty data directory.
-
-        Raises:
-            OSError: If the profile directory cannot be listed or written to.
-        """
-        existing = [
-            int(match.group(1))
-            for path in self.profile_path.iterdir()
-            if path.is_dir() and (match := DATA_DIR_PATTERN.fullmatch(path.name))
-        ]
-        next_dir_idx = max(existing, default=-1) + 1
-        idx = _claim_first_free(
-            next_dir_idx,
-            # mkdir is atomic, so concurrent writers never share a directory
-            lambda idx: (self.profile_path / f"v{idx}").mkdir(exist_ok=False),
-        )
-        data_dir = self.profile_path / f"v{idx}"
-        _logger.debug("Reserved %s (%d existing version(s))", data_dir, len(existing))
-        return data_dir
-
-    def commit_data_dir(self, data_dir: Path) -> None:
-        """Point the manifest at data_dir, unless it already points at a newer version.
-
-        Args:
-            data_dir: The finished data directory.
-
-        Returns:
-            None.
-
-        Raises:
-            ValueError: If data_dir or the version in the manifest has an invalid
-                name, or the manifest file is corrupt.
-            pyrosome.simple_file_lock.FileAlreadyLockedError: If another process holds
-                the manifest lock for longer than `LOCK_TIMEOUT`.
-            pyrosome.simple_file_lock.FileLockPermissionError: If the manifest cannot
-                be locked.
-            OSError: If the manifest file cannot be written.
-        """
-        new_idx = self._data_dir_index(data_dir.name)
-        with self._lock():
-            try:
-                current_name = self._read_latest_data_dir_name()
-            except FileNotFoundError:
-                current_name = None
-            if (
-                current_name is not None
-                and self._data_dir_index(current_name) >= new_idx
-            ):
-                _logger.info(
-                    "Not committing %s: manifest %s already points at newer %s",
-                    data_dir.name,
-                    self.manifest_path,
-                    current_name,
-                )
-                return
-            self._write(data_dir.name)
-            _logger.debug(
-                "Committed %s to %s (was %s)",
-                data_dir.name,
-                self.manifest_path,
-                current_name,
-            )
-
-    def _data_dir_index(self, name: str) -> int:
-        """Get the version index from a data directory name like 'v3'.
-
-        Args:
-            name: The data directory name.
-
-        Returns:
-            The version index.
-
-        Raises:
-            ValueError: If name is not a valid data directory name.
-        """
-        if (match := DATA_DIR_PATTERN.fullmatch(name)) is None:
-            msg = f"Invalid data directory name {name!r} for {self.manifest_path}"
-            raise ValueError(msg)
-        return int(match.group(1))
-
-    def _read_latest_data_dir_name(self) -> str:
-        """Read the latest data directory name from the manifest file.
-
-        Returns:
-            The latest data directory name.
-
-        Raises:
-            FileNotFoundError: If the manifest file does not exist.
-            json.JSONDecodeError: If the manifest file is not valid JSON.
-            ValueError: If the manifest file has no valid latest data directory.
-        """
-        # writes replace the file atomically, so no lock is needed to read it
-        text = self.manifest_path.read_text()
-        with logged_failure(_logger, "Manifest file %s is corrupt", self.manifest_path):
-            manifest = cast("object", json.loads(text))
-        match manifest:
-            case {"latest_data_dir": str() as name} if DATA_DIR_PATTERN.fullmatch(name):
-                return name
-            case _:
-                msg = (
-                    f"Manifest file {self.manifest_path} is corrupt: "
-                    "missing or invalid 'latest_data_dir'."
-                )
-                _logger.error(msg)
-                raise ValueError(msg)
-
-    def _write(self, latest_data_dir: str) -> None:
-        """Atomically replace the manifest file. The caller must hold the lock.
-
-        Args:
-            latest_data_dir: Name of the latest data directory.
-
-        Returns:
-            None.
-
-        Raises:
-            OSError: If the manifest file cannot be written.
-        """
-        manifest: dict[str, str] = {"latest_data_dir": latest_data_dir}
-        tmp_path = _tmp_path(self.profile_path, ".json")
-        tmp_path.write_text(json.dumps(manifest, indent=4))
-        tmp_path.replace(self.manifest_path)
-
-    def _lock(self) -> SimpleWriteLock:
-        """Lock the manifest file.
-
-        Returns:
-            A lock on the manifest file, taken when entered.
-        """
-        return SimpleWriteLock(self.manifest_path, timeout=self.LOCK_TIMEOUT)

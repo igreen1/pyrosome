@@ -243,11 +243,21 @@ class SimpleIo:
         Raises:
             ImportError: If data is a pandas frame needing pyarrow to convert, and
                 pyarrow is not installed.
+            pyrosome.dal.SupersededAppendError: If another process committed a newer
+                version while appending, so readers don't see the appended data.
+            TimeoutError: If the profile has no data and another process's first
+                version is not committed within
+                `pyrosome.ParquetDal.FIRST_COMMIT_TIMEOUT` seconds.
             ValueError: If the columns or their types do not match the existing data
                 (a type must cast to the existing one without losing values), or for
                 any reason `write` raises it.
             FileNotFoundError: If the latest version directory is missing.
             RuntimeError: If the latest data spans more than one directory.
+            pyrosome.simple_file_lock.FileAlreadyLockedError: If there was no data
+                and another process holds the manifest lock for longer than
+                `pyrosome.dal.DataManifestFile.LOCK_TIMEOUT`.
+            pyrosome.simple_file_lock.FileLockPermissionError: If there was no data
+                and the manifest cannot be locked.
             polars.exceptions.PolarsError: If the data cannot be computed or written.
             OSError: If the data directory cannot be written to.
         """

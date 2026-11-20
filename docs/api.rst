@@ -17,6 +17,15 @@ Data access
 
 .. autofunction:: pyrosome.get_accessor
 
+Errors
+------
+
+.. autoexception:: pyrosome.dal.ProfileNotFoundError
+
+.. autoexception:: pyrosome.dal.SupersededAppendError
+
+.. autoexception:: pyrosome.dal.ProfileChangedError
+
 Filtering reads
 ---------------
 

@@ -18,7 +18,8 @@ pyrosome handles this with a small, predictable layout on the filesystem. There 
 
 - **Versioned**: every `write` creates a new version (`v0`, `v1`, …). Older versions stay on disk until you remove them, so rollbacks and audits are simple.
 - **Append-only**: `append` adds a new file to the latest version and never rewrites existing files. Columns are reordered to match the stored data, and cast to its types only when no values are lost (an `Int32` into an `Int64` column); anything else raises `ValueError`.
-- **Safe with several processes**: versions are claimed with an atomic `mkdir`, appends claim their index by exclusively creating a marker file so they never overwrite each other, and the manifest naming the latest version is replaced in one step.
+- **Safe with several processes**: versions are claimed with an atomic `mkdir`, appends claim their index by exclusively creating a marker file so they never overwrite each other, and the manifest naming the latest version is replaced in one step. An append that another process's new version would hide raises `SupersededAppendError` rather than being lost silently.
+- **Easy to maintain**: `compact` merges many small appended files into one, `prune` deletes old versions, and `vacuum` cleans up after processes that were killed mid-write.
 - **Lazy**: `read` returns a `polars.LazyFrame`, so filters and column selections are pushed down into the file scan.
 - **Parquet or CSV**: `ParquetDal` stores parquet; `CsvDal` has the same API and stores CSV for people and tools that need to open the files directly.
 
@@ -146,7 +147,7 @@ pyrosome.dal.ProfileNotFoundError: Cannot find files for ('sales', 'returns')
 
 ## Documentation
 
-The full documentation is in `docs/` and covers concepts, 14 recipes (compaction, rollbacks, pruning old versions, multi-process ingest and more), and the API reference. Build it with:
+The full documentation is in `docs/` and covers concepts, 17 recipes (compaction, rollbacks, pruning old versions, cleaning up after crashes, multi-process ingest and more), and the API reference. Build it with:
 
 ```console
 uv run sphinx-build -W -b html docs docs/_build/html
